@@ -217,7 +217,7 @@ function renderFormulaSection(formulaReport: FormulaCheckReport, sessionId?: str
         const refBadges = col.brokenRefs.map((r) => {
           const fixBtnHtml = r.suggestion && sessionId
             ? `<button class="fix-formula-btn"
-                 onclick="fixFormula(${JSON.stringify(model.modelId)}, ${JSON.stringify(model.modelName)}, ${JSON.stringify(el.elementId)}, ${JSON.stringify(col.columnId)}, ${JSON.stringify(r.ref)}, ${JSON.stringify(r.suggestion)})"
+                 onclick="fixFormula(this, ${JSON.stringify(model.modelId)}, ${JSON.stringify(model.modelName)}, ${JSON.stringify(el.elementId)}, ${JSON.stringify(col.columnId)}, ${JSON.stringify(r.ref)}, ${JSON.stringify(r.suggestion)})"
                >→ ${escapeHtml(r.suggestion)}</button>`
             : r.suggestion
               ? `<span class="formula-suggestion" title="Re-run with session to enable fix">→ ${escapeHtml(r.suggestion)}</span>`
@@ -318,9 +318,8 @@ export function toHtmlReport(
       return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
     }
 
-    function fixFormula(modelId, modelName, elementId, columnId, brokenRef, newRef) {
+    function fixFormula(btn, modelId, modelName, elementId, columnId, brokenRef, newRef) {
       if (!confirm('Replace [' + brokenRef + '] with [' + newRef + '] in "' + modelName + '"?')) return;
-      var btn = event.target;
       btn.disabled = true;
       btn.textContent = 'Fixing…';
 
