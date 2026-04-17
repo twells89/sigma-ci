@@ -1,0 +1,152 @@
+name: 'Sigma CI Validator'
+description: 'Validate Sigma data models for schema drift, blast radius, and formula errors'
+
+inputs:
+  sigma-client-id:
+    description: 'Sigma API client ID'
+    required: true
+  sigma-client-secret:
+    description: 'Sigma API client secret'
+    required: true
+  model-ids:
+    description: 'Space-separated model IDs to validate. Leave empty to validate all models.'
+    required: false
+    default: ''
+  fail-on-drift:
+    description: 'Exit with a non-zero code if schema drift is detected (blocks PR merge)'
+    required: false
+    default: 'true'
+
+outputs:
+  has-drift:
+    description: 'true if schema drift was detected in any model'
+    value: ${{ steps.run.outputs.has_drift }}
+  report-markdown:
+    description: 'Validation summary formatted as GitHub-flavoured markdown'
+    value: ${{ steps.run.outputs.report_markdown }}
+  report-json:
+    description: 'Full validation report as a JSON string'
+    value: ${{ steps.run.outputs.report_json }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install and build sigma-ci
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci && npm run build
+
+    - name: Run validation
+      id: run
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        SIGMA_CLIENT_ID: ${{ inputs.sigma-client-id }}
+        SIGMA_CLIENT_SECRET: ${{ inputs.sigma-client-secret }}
+      run: |
+        # Build argument list
+        if [ -n "${{ inputs.model-ids }}" ]; then
+          ARGS=$(echo "${{ inputs.model-ids }}" | tr ' ' '\n' | sed '/^$/d' | sed 's/^/--model /' | tr '\n' ' ')
+        else
+          ARGS="--all"
+        fi
+
+        # Run — progress goes to stderr (visible in Actions log), JSON report to stdout
+        REPORT=$(node dist/index.js validate $ARGS --format json 2>/tmp/sigma-ci.log || true)
+        cat /tmp/sigma-ci.log >&2
+
+        # Store raw JSON
+        {
+          echo "report_json<<__SIGMA_EOF__"
+          echo "$REPORT"
+          echo "__SIGMA_EOF__"
+        } >> "$GITHUB_OUTPUT"
+
+        # Parse has-drift
+        HAS_DRIFT=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
+          import { createInterface } from 'readline';
+          let d = '';
+          const rl = createInterface({ input: process.stdin });
+          rl.on('line', l => d += l + '\n');
+          rl.on('close', () => {
+            try {
+              const r = JSON.parse(d);
+              console.log(String(r.drift?.models?.some(m => m.hasDrift) ?? false));
+            } catch { console.log('false'); }
+          });
+        JSEOF
+        )
+        echo "has_drift=$HAS_DRIFT" >> "$GITHUB_OUTPUT"
+
+        # Build markdown summary
+        MARKDOWN=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
+          import { createInterface } from 'readline';
+          let d = '';
+          const rl = createInterface({ input: process.stdin });
+          rl.on('line', l => d += l + '\n');
+          rl.on('close', () => {
+            try {
+              const r = JSON.parse(d);
+              const lines = [];
+
+              // Drift section
+              const driftModels = r.drift?.models ?? [];
+              const drifted = driftModels.filter(m => m.hasDrift);
+              if (drifted.length > 0) {
+                lines.push('### ⚠️ Schema Drift Detected');
+                lines.push('');
+                lines.push('The following warehouse columns are referenced in the model but no longer exist:');
+                lines.push('');
+                for (const m of drifted) {
+                  lines.push(`**${m.modelName}**`);
+                  for (const t of m.tables.filter(t => t.missingColumns.length > 0)) {
+                    const cols = t.missingColumns.map(c => `\`${c}\``).join(', ');
+                    lines.push(`- \`${t.tableName}\`: ${cols}`);
+                  }
+                  lines.push('');
+                }
+              } else if (driftModels.length > 0) {
+                lines.push('### ✅ No Schema Drift');
+                lines.push('');
+                lines.push('All referenced warehouse columns exist.');
+                lines.push('');
+              }
+
+              // Blast radius section
+              const contentModels = r.content?.models ?? [];
+              const withImpact = contentModels.filter(m => (m.directWorkbooks ?? 0) + (m.transitiveWorkbooks ?? 0) > 0);
+              if (withImpact.length > 0) {
+                lines.push('### 📊 Blast Radius');
+                lines.push('');
+                lines.push('Workbooks affected by changes to these models:');
+                lines.push('');
+                for (const m of withImpact) {
+                  lines.push(`- **${m.modelName}**: ${m.directWorkbooks} direct, ${m.transitiveWorkbooks} transitive workbook(s)`);
+                }
+                lines.push('');
+              }
+
+              console.log(lines.join('\n').trim());
+            } catch (e) {
+              console.log('_Could not parse validation report_');
+            }
+          });
+        JSEOF
+        )
+
+        {
+          echo "report_markdown<<__SIGMA_EOF__"
+          echo "$MARKDOWN"
+          echo "__SIGMA_EOF__"
+        } >> "$GITHUB_OUTPUT"
+
+        # Fail if drift detected and fail-on-drift is enabled
+        if [ "$HAS_DRIFT" = "true" ] && [ "${{ inputs.fail-on-drift }}" = "true" ]; then
+          echo "::error::Schema drift detected — merge blocked until drift is resolved."
+          exit 1
+        fi
