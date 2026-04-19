@@ -433,6 +433,12 @@ app.post("/api/validate", async (req, res) => {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no"); // disable Render/nginx proxy buffering
   res.flushHeaders(); // open the SSE stream immediately before any async work
+  // Disable TCP Nagle's algorithm so each write() is sent immediately rather
+  // than batched into a larger packet.  Also write an initial comment so the
+  // proxy sees body data right away and starts forwarding (some proxies buffer
+  // until the first byte of body even after headers are sent).
+  if (res.socket) res.socket.setNoDelay(true);
+  res.write(": stream-open\n\n");
 
   const send = (event: string, data: unknown) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
