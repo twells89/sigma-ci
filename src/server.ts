@@ -49,7 +49,7 @@ const LANDING_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sigma CI</title>
+  <title>Sigma Sentinel</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     body {
@@ -72,19 +72,29 @@ const LANDING_HTML = `<!DOCTYPE html>
       overflow: hidden;
     }
     .card-header {
-      background: linear-gradient(135deg, #1a1a2e 0%, #2d1b6b 100%);
+      background: linear-gradient(135deg, #0c0c1e 0%, #1a0f40 55%, #2d1b6b 100%);
       padding: 26px 36px 22px;
       color: white;
+      position: relative;
+      overflow: hidden;
     }
-    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
-    .logo-icon {
-      width: 36px; height: 36px; border-radius: 8px;
-      background: rgba(255,255,255,0.15);
-      display: flex; align-items: center; justify-content: center;
-      font-weight: 800; font-size: 1.15rem; letter-spacing: -1px;
+    .card-header::before {
+      content: '';
+      position: absolute;
+      width: 220px; height: 220px;
+      background: radial-gradient(circle, rgba(139,92,246,0.18) 0%, transparent 65%);
+      top: -70px; right: -50px;
+      pointer-events: none;
     }
-    h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
-    .subtitle { font-size: 0.84rem; margin: 0; opacity: 0.7; line-height: 1.5; }
+    .logo { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; position: relative; }
+    .logo-svg { flex-shrink: 0; }
+    @keyframes sentinel-glow {
+      0%, 100% { filter: drop-shadow(0 0 0px rgba(167,139,250,0)); }
+      50%       { filter: drop-shadow(0 0 6px rgba(167,139,250,0.4)); }
+    }
+    .logo-svg { animation: sentinel-glow 4s ease-in-out infinite; }
+    h1 { font-size: 1.4rem; font-weight: 700; margin: 0; letter-spacing: -0.3px; }
+    .subtitle { font-size: 0.84rem; margin: 0; opacity: 0.65; line-height: 1.5; }
     .card-body { padding: 28px 36px 32px; }
 
     /* ── Form ── */
@@ -171,10 +181,15 @@ const LANDING_HTML = `<!DOCTYPE html>
   <div class="card">
     <div class="card-header">
       <div class="logo">
-        <div class="logo-icon">Σ</div>
-        <h1>Sigma CI</h1>
+        <svg class="logo-svg" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 35" width="30" height="35" fill="none">
+          <path d="M15 1.5 L27 6 L27 20 C27 28 21 33 15 35 C9 33 3 28 3 20 L3 6 Z"
+                fill="rgba(255,255,255,0.17)" stroke="rgba(255,255,255,0.42)" stroke-width="1.2" stroke-linejoin="round"/>
+          <text x="15" y="22.5" text-anchor="middle" fill="white" font-size="14" font-weight="800"
+                font-family="Georgia,'Times New Roman',serif">&#x3A3;</text>
+        </svg>
+        <h1>Sigma Sentinel</h1>
       </div>
-      <p class="subtitle">Validate data models — blast radius, schema drift, and formula integrity.</p>
+      <p class="subtitle">Always-on monitoring for Sigma data models — schema drift, formula integrity, and blast radius.</p>
     </div>
 
     <div class="card-body">
@@ -592,5 +607,5 @@ app.post("/api/fix-formula", async (req, res) => {
 
 const PORT = process.env["PORT"] ? parseInt(process.env["PORT"]) : 3000;
 app.listen(PORT, () => {
-  console.log(`Sigma CI server running on http://localhost:${PORT}`);
+  console.log(`Sigma Sentinel running on http://localhost:${PORT}`);
 });

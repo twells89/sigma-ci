@@ -466,16 +466,17 @@ export function toHtmlReport(
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Sigma CI Report</title>
+  <title>Sigma Sentinel Report</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1a202c; margin: 0; padding: 0; }
 
     /* ── Page shell ── */
-    .page-header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); color: white; padding: 28px 40px 24px; }
-    .page-header h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 10px; }
-    .header-logo { background: rgba(255,255,255,0.15); border-radius: 8px; padding: 4px 10px; font-size: 1.1rem; font-weight: 800; letter-spacing: -1px; }
-    .page-header .subtitle { color: rgba(255,255,255,0.6); font-size: 0.86rem; margin: 0; }
+    .page-header { background: linear-gradient(135deg, #0c0c1e 0%, #1a0f40 55%, #2d1b6b 100%); color: white; padding: 28px 40px 24px; position: relative; overflow: hidden; }
+    .page-header::before { content: ''; position: absolute; width: 280px; height: 280px; background: radial-gradient(circle, rgba(139,92,246,0.15) 0%, transparent 65%); top: -80px; right: -60px; pointer-events: none; }
+    .page-header h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 12px; position: relative; }
+    .header-logo { display: flex; align-items: center; flex-shrink: 0; }
+    .page-header .subtitle { color: rgba(255,255,255,0.6); font-size: 0.86rem; margin: 0; position: relative; }
     .page-body { max-width: 1200px; margin: 0 auto; padding: 32px 40px 60px; }
 
     /* ── Typography / sections ── */
@@ -589,7 +590,17 @@ export function toHtmlReport(
 </head>
 <body>
   <div class="page-header">
-    <h1><span class="header-logo">Σ</span> Sigma CI Report</h1>
+    <h1>
+      <span class="header-logo">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 35" width="32" height="37" fill="none">
+          <path d="M15 1.5 L27 6 L27 20 C27 28 21 33 15 35 C9 33 3 28 3 20 L3 6 Z"
+                fill="rgba(255,255,255,0.17)" stroke="rgba(255,255,255,0.42)" stroke-width="1.2" stroke-linejoin="round"/>
+          <text x="15" y="22.5" text-anchor="middle" fill="white" font-size="14" font-weight="800"
+                font-family="Georgia,'Times New Roman',serif">&#x3A3;</text>
+        </svg>
+      </span>
+      Sigma Sentinel Report
+    </h1>
     <p class="subtitle">Generated ${escapeHtml(generatedAt)}</p>
   </div>
   <div class="page-body">

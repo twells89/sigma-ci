@@ -1,10 +1,10 @@
 {
-  "name": "sigma-ci",
+  "name": "sigma-sentinel",
   "type": "module",
   "version": "0.1.0",
-  "description": "CI/CD content validation for Sigma Computing data models",
+  "description": "Always-on monitoring for Sigma Computing data models — schema drift, formula integrity, and blast radius",
   "bin": {
-    "sigma-ci": "./dist/index.js"
+    "sigma-sentinel": "./dist/index.js"
   },
   "scripts": {
     "build": "tsc",
