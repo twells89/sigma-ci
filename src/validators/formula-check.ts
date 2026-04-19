@@ -158,10 +158,13 @@ export async function runFormulaCheck(
       ]);
 
       // Build elementId → column name set from the API result.
+      // Include both `name` and `label` since it's ambiguous which one Sigma
+      // formulas use for column references.
       const apiColsByElement = new Map<string, string[]>();
       for (const col of apiCols) {
         const list = apiColsByElement.get(col.elementId) ?? [];
         list.push(col.name);
+        if (col.label && col.label !== col.name) list.push(col.label);
         apiColsByElement.set(col.elementId, list);
       }
 
@@ -194,12 +197,16 @@ export async function runFormulaCheck(
             }
           }
 
-          // Fallback: if the columns API returned nothing for this element
-          // (e.g., API error or empty element), derive names from the spec.
-          if (availableNames.length === 0) {
-            for (const col of element.columns ?? []) {
-              const name = getColumnDisplayName(col);
-              if (name) { availableNames.push(name); availableNormalized.add(normalizeRef(name)); }
+          // Always supplement with spec-derived names.  The columns API is the
+          // authoritative source but may fail, return an ID mismatch, or omit
+          // columns that have metrics alongside them (the old "if empty" guard
+          // would skip this block whenever any metric was already in the list,
+          // leaving passthrough column names out of availableNames entirely).
+          for (const col of element.columns ?? []) {
+            const name = getColumnDisplayName(col);
+            if (name && !availableNormalized.has(normalizeRef(name))) {
+              availableNames.push(name);
+              availableNormalized.add(normalizeRef(name));
             }
           }
 
