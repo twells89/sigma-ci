@@ -1,4 +1,4 @@
-name: 'Sigma CI Validator'
+name: 'Sigma Sentinel'
 description: 'Validate Sigma data models for schema drift, blast radius, and formula errors'
 
 inputs:
@@ -16,11 +16,18 @@ inputs:
     description: 'Exit with a non-zero code if schema drift is detected (blocks PR merge)'
     required: false
     default: 'true'
+  fail-on-formula-errors:
+    description: 'Exit with a non-zero code if broken formula references are detected'
+    required: false
+    default: 'false'
 
 outputs:
   has-drift:
     description: 'true if schema drift was detected in any model'
     value: ${{ steps.run.outputs.has_drift }}
+  has-formula-errors:
+    description: 'true if broken formula references were detected in any model'
+    value: ${{ steps.run.outputs.has_formula_errors }}
   report-markdown:
     description: 'Validation summary formatted as GitHub-flavoured markdown'
     value: ${{ steps.run.outputs.report_markdown }}
@@ -36,7 +43,7 @@ runs:
       with:
         node-version: '20'
 
-    - name: Install and build sigma-ci
+    - name: Install and build sigma-sentinel
       shell: bash
       working-directory: ${{ github.action_path }}
       run: npm ci && npm run build
@@ -57,8 +64,8 @@ runs:
         fi
 
         # Run — progress goes to stderr (visible in Actions log), JSON report to stdout
-        REPORT=$(node dist/index.js validate $ARGS --format json 2>/tmp/sigma-ci.log || true)
-        cat /tmp/sigma-ci.log >&2
+        REPORT=$(node dist/index.js validate $ARGS --format json 2>/tmp/sigma-sentinel.log || true)
+        cat /tmp/sigma-sentinel.log >&2
 
         # Store raw JSON
         {
@@ -67,8 +74,8 @@ runs:
           echo "__SIGMA_EOF__"
         } >> "$GITHUB_OUTPUT"
 
-        # Parse has-drift
-        HAS_DRIFT=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
+        # Parse has-drift and has-formula-errors in one Node pass
+        PARSED=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
           import { createInterface } from 'readline';
           let d = '';
           const rl = createInterface({ input: process.stdin });
@@ -76,12 +83,18 @@ runs:
           rl.on('close', () => {
             try {
               const r = JSON.parse(d);
-              console.log(String(r.drift?.models?.some(m => m.hasDrift) ?? false));
-            } catch { console.log('false'); }
+              const hasDrift = r.schemaDrift?.models?.some(m => m.hasDrift) ?? false;
+              const hasFormula = (r.formulaCheck?.models ?? []).some(m => m.totalBroken > 0);
+              console.log(String(hasDrift));
+              console.log(String(hasFormula));
+            } catch { console.log('false\nfalse'); }
           });
         JSEOF
         )
+        HAS_DRIFT=$(echo "$PARSED" | sed -n '1p')
+        HAS_FORMULA_ERRORS=$(echo "$PARSED" | sed -n '2p')
         echo "has_drift=$HAS_DRIFT" >> "$GITHUB_OUTPUT"
+        echo "has_formula_errors=$HAS_FORMULA_ERRORS" >> "$GITHUB_OUTPUT"
 
         # Build markdown summary
         MARKDOWN=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
@@ -94,13 +107,13 @@ runs:
               const r = JSON.parse(d);
               const lines = [];
 
-              // Drift section
-              const driftModels = r.drift?.models ?? [];
+              // Schema drift section
+              const driftModels = r.schemaDrift?.models ?? [];
               const drifted = driftModels.filter(m => m.hasDrift);
               if (drifted.length > 0) {
                 lines.push('### ⚠️ Schema Drift Detected');
                 lines.push('');
-                lines.push('The following warehouse columns are referenced in the model but no longer exist:');
+                lines.push('Warehouse columns referenced in the model no longer exist:');
                 lines.push('');
                 for (const m of drifted) {
                   lines.push(`**${m.modelName}**`);
@@ -131,6 +144,32 @@ runs:
                 lines.push('');
               }
 
+              // Formula check section
+              const formulaModels = r.formulaCheck?.models ?? [];
+              const withFormulaErrors = formulaModels.filter(m => m.totalBroken > 0);
+              if (withFormulaErrors.length > 0) {
+                lines.push('### 🔗 Broken Formula References');
+                lines.push('');
+                for (const m of withFormulaErrors) {
+                  lines.push(`**${m.modelName}** — ${m.totalBroken} broken reference(s)`);
+                  for (const el of m.elements) {
+                    for (const col of el.brokenColumns) {
+                      const refs = col.brokenRefs.map(ref => {
+                        const sug = ref.suggestion ? ` → \`${ref.suggestion}\`` : '';
+                        return `\`[${ref.ref}]\`${sug}`;
+                      }).join(', ');
+                      lines.push(`- _${el.elementName ?? el.elementId}_ / **${col.columnName ?? col.columnId}**: ${refs}`);
+                    }
+                  }
+                  lines.push('');
+                }
+              } else if (formulaModels.length > 0) {
+                lines.push('### ✅ No Broken Formula References');
+                lines.push('');
+                lines.push('All formula references resolve correctly.');
+                lines.push('');
+              }
+
               console.log(lines.join('\n').trim());
             } catch (e) {
               console.log('_Could not parse validation report_');
@@ -148,5 +187,11 @@ runs:
         # Fail if drift detected and fail-on-drift is enabled
         if [ "$HAS_DRIFT" = "true" ] && [ "${{ inputs.fail-on-drift }}" = "true" ]; then
           echo "::error::Schema drift detected — merge blocked until drift is resolved."
+          exit 1
+        fi
+
+        # Fail if formula errors detected and fail-on-formula-errors is enabled
+        if [ "$HAS_FORMULA_ERRORS" = "true" ] && [ "${{ inputs.fail-on-formula-errors }}" = "true" ]; then
+          echo "::error::Broken formula references detected — merge blocked until references are fixed."
           exit 1
         fi
