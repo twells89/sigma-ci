@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: sigma-ci
+    name: sigma-sentinel
     runtime: node
     buildCommand: npm install && npm run build
     startCommand: npm start
