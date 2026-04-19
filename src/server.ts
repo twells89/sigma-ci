@@ -32,6 +32,20 @@ interface StoredReport {
 
 const reports = new Map<string, StoredReport>();
 
+// ─── Job store (in-memory, 30-min TTL) ────────────────────────────────────────
+// Each validation run gets a jobId.  The client polls /api/status/:jobId every
+// second rather than using SSE, which Render's proxy buffers until res.end().
+
+interface Job {
+  status: "running" | "done" | "error";
+  steps: string[];
+  redirectUrl?: string;
+  error?: string;
+  createdAt: number;
+}
+
+const jobs = new Map<string, Job>();
+
 setInterval(() => {
   const now = Date.now();
   for (const [id, s] of sessions) {
@@ -39,6 +53,9 @@ setInterval(() => {
   }
   for (const [id, r] of reports) {
     if (now - r.createdAt > 7_200_000) reports.delete(id);
+  }
+  for (const [id, j] of jobs) {
+    if (now - j.createdAt > 1_800_000) jobs.delete(id);
   }
 }, 600_000);
 
@@ -371,50 +388,55 @@ const LANDING_HTML = `<!DOCTYPE html>
         baseUrl: document.getElementById('baseUrl').value,
       };
 
+      let pollTimer = null;
+
+      function abort(msg) {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        markStepError();
+        errorEl.textContent = 'Error: ' + msg;
+        errorEl.style.display = 'block';
+        runBtn.disabled = false;
+        runBtn.textContent = 'Run Validation';
+      }
+
       try {
+        // Start the job — server returns a jobId immediately and runs in background
         const resp = await fetch('/api/validate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
-
         if (!resp.ok) throw new Error(await resp.text());
+        const { jobId } = await resp.json();
 
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = '';
+        // Poll /api/status/:jobId every second for progress updates
+        let lastStepCount = 0;
+        pollTimer = setInterval(async () => {
+          try {
+            const sr = await fetch('/api/status/' + jobId);
+            if (!sr.ok) return; // transient — keep polling
+            const job = await sr.json();
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const events = buf.split('\\n\\n');
-          buf = events.pop();
-
-          for (const block of events) {
-            const eventLine = block.match(/^event: (.+)/m);
-            const dataLine  = block.match(/^data: (.+)/m);
-            if (!eventLine || !dataLine) continue;
-            const eventType = eventLine[1].trim();
-            const data = JSON.parse(dataLine[1]);
-
-            if (eventType === 'progress') {
-              advanceStep(data);
-              addLog(data);
-            } else if (eventType === 'redirect') {
-              window.location.href = data;
-              return;
-            } else if (eventType === 'error') {
-              markStepError();
-              throw new Error(data);
+            // Feed any new steps into the step tracker + log
+            for (let i = lastStepCount; i < (job.steps || []).length; i++) {
+              advanceStep(job.steps[i]);
+              addLog(job.steps[i]);
             }
+            lastStepCount = (job.steps || []).length;
+
+            if (job.status === 'done' && job.redirectUrl) {
+              clearInterval(pollTimer);
+              window.location.href = job.redirectUrl;
+            } else if (job.status === 'error') {
+              abort(job.error || 'Unknown error');
+            }
+          } catch (_) {
+            // Network hiccup — keep polling
           }
-        }
+        }, 1000);
+
       } catch (err) {
-        errorEl.textContent = 'Error: ' + err.message;
-        errorEl.style.display = 'block';
-        runBtn.disabled = false;
-        runBtn.textContent = 'Run Validation';
+        abort(err.message);
       }
     });
   </script>
@@ -427,23 +449,11 @@ app.get("/", (_req, res) => {
   res.send(LANDING_HTML);
 });
 
-app.post("/api/validate", async (req, res) => {
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // disable Render/nginx proxy buffering
-  res.flushHeaders(); // open the SSE stream immediately before any async work
-  // Disable TCP Nagle's algorithm so each write() is sent immediately rather
-  // than batched into a larger packet.  Also write an initial comment so the
-  // proxy sees body data right away and starts forwarding (some proxies buffer
-  // until the first byte of body even after headers are sent).
-  if (res.socket) res.socket.setNoDelay(true);
-  res.write(": stream-open\n\n");
-
-  const send = (event: string, data: unknown) => {
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  };
-
+// POST /api/validate — starts a background job, returns { jobId } immediately.
+// The client polls /api/status/:jobId every second for progress.
+// This avoids SSE entirely: Render's proxy buffers streaming responses until
+// the connection closes, making real-time SSE progress impossible there.
+app.post("/api/validate", (req, res) => {
   const { clientId, clientSecret, baseUrl } = req.body as {
     clientId?: string;
     clientSecret?: string;
@@ -451,53 +461,72 @@ app.post("/api/validate", async (req, res) => {
   };
 
   if (!clientId || !clientSecret) {
-    send("error", "clientId and clientSecret are required.");
-    res.end();
+    res.status(400).json({ error: "clientId and clientSecret are required." });
     return;
   }
 
-  const client = new SigmaClient({ clientId, clientSecret, baseUrl });
+  const jobId = randomUUID();
+  const job: Job = { status: "running", steps: [], createdAt: Date.now() };
+  jobs.set(jobId, job);
 
-  try {
-    send("progress", "Authenticating with Sigma…");
-    await client.authenticate();
+  // Fire-and-forget validation in the background
+  void (async () => {
+    const addStep = (msg: string) => { job.steps.push(msg); };
+    const client = new SigmaClient({ clientId, clientSecret, baseUrl });
+    try {
+      addStep("Authenticating with Sigma…");
+      await client.authenticate();
 
-    send("progress", "Fetching data models…");
-    const models = await client.listDataModels();
-    send("progress", `Found ${models.length} data model(s). Starting validation…`);
+      addStep("Fetching data models…");
+      const models = await client.listDataModels();
+      addStep(`Found ${models.length} data model(s). Starting validation…`);
 
-    const modelIds = models.map((m) => m.dataModelId);
-    const modelUrlMap = new Map(models.map((m) => [m.dataModelId, m.url ?? ""]));
+      const modelIds = models.map((m) => m.dataModelId);
+      const modelUrlMap = new Map(models.map((m) => [m.dataModelId, m.url ?? ""]));
 
-    send("progress", "Running content validation (blast radius + dependency graph)…");
+      addStep("Running content validation (blast radius + dependency graph)…");
 
-    const [contentReport, driftReport] = await Promise.all([
-      runContentValidation(client, models, modelUrlMap),
-      runSchemaDriftValidation(client, modelIds, modelUrlMap, (msg) => send("progress", msg)),
-    ]);
+      const [contentReport, driftReport] = await Promise.all([
+        runContentValidation(client, models, modelUrlMap),
+        runSchemaDriftValidation(client, modelIds, modelUrlMap, addStep),
+      ]);
 
-    send("progress", "Checking formula references…");
-    const formulaReport = await runFormulaCheck(
-      client, models, modelUrlMap, (msg) => send("progress", msg)
-    );
+      addStep("Checking formula references…");
+      const formulaReport = await runFormulaCheck(client, models, modelUrlMap, addStep);
 
-    // Store session so fix buttons can call back
-    const sessionId = randomUUID();
-    sessions.set(sessionId, { clientId, clientSecret, baseUrl, createdAt: Date.now() });
+      const sessionId = randomUUID();
+      sessions.set(sessionId, { clientId, clientSecret, baseUrl, createdAt: Date.now() });
 
-    send("progress", "Generating report…");
-    const html = toHtmlReport(contentReport, driftReport, { sessionId, formulaReport });
+      addStep("Generating report…");
+      const html = toHtmlReport(contentReport, driftReport, { sessionId, formulaReport });
 
-    // Store the HTML and send a redirect URL rather than the full HTML over SSE.
-    // document.write() is unreliable for large documents; a normal GET request is not.
-    const reportId = randomUUID();
-    reports.set(reportId, { html, createdAt: Date.now() });
-    send("redirect", `/r/${reportId}`);
-  } catch (err) {
-    send("error", (err as Error).message);
+      const reportId = randomUUID();
+      reports.set(reportId, { html, createdAt: Date.now() });
+
+      job.redirectUrl = `/r/${reportId}`;
+      job.status = "done";
+    } catch (err) {
+      job.error = (err as Error).message;
+      job.status = "error";
+    }
+  })();
+
+  res.json({ jobId });
+});
+
+// GET /api/status/:jobId — returns current job state for the polling client
+app.get("/api/status/:jobId", (req, res) => {
+  const job = jobs.get(req.params["jobId"] ?? "");
+  if (!job) {
+    res.status(404).json({ error: "Job not found or expired." });
+    return;
   }
-
-  res.end();
+  res.json({
+    status: job.status,
+    steps: job.steps,
+    redirectUrl: job.redirectUrl ?? null,
+    error: job.error ?? null,
+  });
 });
 
 app.get("/r/:reportId", (req, res) => {
