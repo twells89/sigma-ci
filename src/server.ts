@@ -21,10 +21,24 @@ interface Session {
 
 const sessions = new Map<string, Session>();
 
+// ─── Report store (in-memory, 2-hour TTL) ─────────────────────────────────────
+// Storing HTML here lets the browser load the report as a normal GET request
+// instead of using document.write(), which is unreliable for large documents.
+
+interface StoredReport {
+  html: string;
+  createdAt: number;
+}
+
+const reports = new Map<string, StoredReport>();
+
 setInterval(() => {
   const now = Date.now();
   for (const [id, s] of sessions) {
     if (now - s.createdAt > 3_600_000) sessions.delete(id);
+  }
+  for (const [id, r] of reports) {
+    if (now - r.createdAt > 7_200_000) reports.delete(id);
   }
 }, 600_000);
 
@@ -53,113 +67,248 @@ const LANDING_HTML = `<!DOCTYPE html>
       background: #fff;
       border-radius: 12px;
       box-shadow: 0 4px 24px rgba(0,0,0,0.10);
-      padding: 40px 48px;
       width: 100%;
       max-width: 520px;
+      overflow: hidden;
     }
-    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .card-header {
+      background: linear-gradient(135deg, #1a1a2e 0%, #2d1b6b 100%);
+      padding: 26px 36px 22px;
+      color: white;
+    }
+    .logo { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
     .logo-icon {
       width: 36px; height: 36px; border-radius: 8px;
-      background: linear-gradient(135deg, #7B2FBE, #9F5FE8);
+      background: rgba(255,255,255,0.15);
       display: flex; align-items: center; justify-content: center;
-      color: white; font-weight: 700; font-size: 1.1rem;
+      font-weight: 800; font-size: 1.15rem; letter-spacing: -1px;
     }
-    h1 { font-size: 1.5rem; font-weight: 700; margin: 0; }
-    .subtitle { color: #718096; font-size: 0.9rem; margin: 6px 0 32px; line-height: 1.5; }
-    label { display: block; font-size: 0.85rem; font-weight: 600; color: #4a5568; margin-bottom: 6px; }
-    .field { margin-bottom: 20px; }
-    .optional { font-weight: 400; color: #a0aec0; }
-    input[type="text"], input[type="password"] {
-      width: 100%; padding: 10px 14px;
-      border: 1px solid #e2e8f0; border-radius: 8px;
-      font-size: 0.9rem; background: #f7fafc;
-      outline: none; transition: border-color 0.15s;
+    h1 { font-size: 1.4rem; font-weight: 700; margin: 0; }
+    .subtitle { font-size: 0.84rem; margin: 0; opacity: 0.7; line-height: 1.5; }
+    .card-body { padding: 28px 36px 32px; }
+
+    /* ── Form ── */
+    label { display: block; font-size: 0.8rem; font-weight: 600; color: #4a5568; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.04em; }
+    .field { margin-bottom: 16px; }
+    input[type="text"], input[type="password"], select {
+      width: 100%; padding: 9px 13px;
+      border: 1px solid #e2e8f0; border-radius: 7px;
+      font-size: 0.88rem; background: #f8fafc; color: #1a202c;
+      outline: none; transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none; -webkit-appearance: none;
     }
-    input:focus { border-color: #7B2FBE; background: #fff; box-shadow: 0 0 0 3px rgba(123,47,190,0.1); }
+    select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%23718096' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 13px center;
+      padding-right: 34px;
+      cursor: pointer;
+    }
+    input:focus, select:focus { border-color: #7c3aed; background: #fff; box-shadow: 0 0 0 3px rgba(124,58,237,0.12); }
+    .region-hint { font-size: 0.73rem; color: #a0aec0; margin-top: 5px; }
     button[type="submit"] {
       width: 100%; padding: 12px;
-      background: linear-gradient(135deg, #7B2FBE, #9F5FE8);
+      background: linear-gradient(135deg, #1a1a2e 0%, #4c1d95 100%);
       color: white; border: none; border-radius: 8px;
-      font-size: 0.95rem; font-weight: 600; cursor: pointer;
+      font-size: 0.93rem; font-weight: 600; cursor: pointer;
       transition: opacity 0.15s;
       margin-top: 4px;
     }
-    button[type="submit"]:hover:not(:disabled) { opacity: 0.9; }
-    button[type="submit"]:disabled { opacity: 0.6; cursor: not-allowed; }
-    #progress { display: none; margin-top: 28px; }
+    button[type="submit"]:hover:not(:disabled) { opacity: 0.88; }
+    button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; }
+    .divider { border: none; border-top: 1px solid #e2e8f0; margin: 0 0 20px; }
+
+    /* ── Progress area ── */
+    #progress { display: none; margin-top: 22px; }
     .progress-header {
-      font-size: 0.85rem; font-weight: 600; color: #4a5568;
-      margin-bottom: 8px; display: flex; align-items: center; gap: 8px;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 0.82rem; font-weight: 600; color: #4a5568;
+      margin-bottom: 12px;
     }
     .spinner {
       width: 14px; height: 14px; border: 2px solid #e2e8f0;
-      border-top-color: #7B2FBE; border-radius: 50%;
-      animation: spin 0.8s linear infinite;
+      border-top-color: #7c3aed; border-radius: 50%;
+      animation: spin 0.8s linear infinite; flex-shrink: 0;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
-    #log {
-      background: #1a1a2e; border-radius: 8px;
-      padding: 16px; max-height: 300px; overflow-y: auto;
-      font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.78rem;
-      color: #a0aec0; line-height: 1.6;
+
+    /* ── Step tracker ── */
+    .steps { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 2px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; overflow: hidden; }
+    .step  {
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 14px;
+      font-size: 0.83rem; color: #a0aec0;
+      border-bottom: 1px solid #e2e8f0; transition: background 0.2s, color 0.2s;
     }
-    #log .line::before { content: '› '; color: #7B2FBE; }
+    .step:last-child { border-bottom: none; }
+    .step.active { color: #1a202c; background: #fff; font-weight: 600; }
+    .step.done   { color: #276749; background: #f0fff4; }
+    .step.error  { color: #9b2c2c; background: #fff5f5; }
+    .step-icon   { width: 22px; height: 22px; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; flex-shrink: 0; }
+    .step-num    { width: 20px; height: 20px; border-radius: 50%; background: #e2e8f0; color: #718096; font-size: 0.7rem; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+    .step.active .step-num { background: #7c3aed; color: white; }
+    .step-spinner { width: 13px; height: 13px; border: 2px solid #d6bcfa; border-top-color: #7c3aed; border-radius: 50%; animation: spin 0.8s linear infinite; }
+    .step-label  { flex: 1; }
+    .step-detail { font-size: 0.73rem; color: #a0aec0; margin-left: auto; white-space: nowrap; }
+    .step.active .step-detail { color: #7c3aed; }
+
+    /* ── Log ── */
+    #log {
+      background: #0f0f1a; border-radius: 8px;
+      padding: 12px 14px; max-height: 200px; overflow-y: auto;
+      font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.74rem;
+      color: #718096; line-height: 1.65;
+    }
+    #log .line::before { content: '› '; color: #7c3aed; }
     #error-msg {
       display: none; background: #fff5f5; border: 1px solid #fc8181;
       border-radius: 8px; padding: 12px 16px; color: #c53030;
-      font-size: 0.85rem; margin-top: 16px;
+      font-size: 0.84rem; margin-top: 16px; line-height: 1.5;
     }
-    .features { display: flex; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
-    .feature { flex: 1; min-width: 120px; background: #f7fafc; border-radius: 8px; padding: 12px; font-size: 0.8rem; color: #4a5568; }
-    .feature strong { display: block; color: #1a202c; margin-bottom: 2px; font-size: 0.82rem; }
   </style>
 </head>
 <body>
   <div class="card">
-    <div class="logo">
-      <div class="logo-icon">Σ</div>
-      <h1>Sigma CI</h1>
-    </div>
-    <p class="subtitle">Validate your Sigma data models — check downstream blast radius, detect schema drift, and fix broken column references.</p>
-
-    <div class="features">
-      <div class="feature"><strong>📊 Blast Radius</strong>Which workbooks break when you change a model</div>
-      <div class="feature"><strong>🔍 Schema Drift</strong>Columns missing from the warehouse</div>
-      <div class="feature"><strong>🔧 Auto-Fix</strong>Remove missing columns from models</div>
+    <div class="card-header">
+      <div class="logo">
+        <div class="logo-icon">Σ</div>
+        <h1>Sigma CI</h1>
+      </div>
+      <p class="subtitle">Validate data models — blast radius, schema drift, and formula integrity.</p>
     </div>
 
-    <form id="form">
-      <div class="field">
-        <label for="clientId">Client ID</label>
-        <input id="clientId" type="text" placeholder="Your Sigma Client ID" required autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="clientSecret">Client Secret</label>
-        <input id="clientSecret" type="password" placeholder="Your Sigma Client Secret" required autocomplete="off" />
-      </div>
-      <div class="field">
-        <label for="baseUrl">API Base URL <span class="optional">(optional)</span></label>
-        <input id="baseUrl" type="text" placeholder="https://aws-api.sigmacomputing.com" />
-      </div>
-      <button type="submit" id="runBtn">Run Validation</button>
-    </form>
+    <div class="card-body">
+      <form id="form">
+        <div class="field">
+          <label for="clientId">Client ID</label>
+          <input id="clientId" type="text" placeholder="Your Sigma Client ID" required autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="clientSecret">Client Secret</label>
+          <input id="clientSecret" type="password" placeholder="Your Sigma Client Secret" required autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="baseUrl">API Region</label>
+          <select id="baseUrl">
+            <optgroup label="GCP">
+              <option value="https://api.sigmacomputing.com">api.sigmacomputing.com — GCP US</option>
+              <option value="https://api.sa.gcp.sigmacomputing.com">api.sa.gcp.sigmacomputing.com — GCP KSA</option>
+            </optgroup>
+            <optgroup label="AWS">
+              <option value="https://aws-api.sigmacomputing.com" selected>aws-api.sigmacomputing.com — AWS US West</option>
+              <option value="https://api.us-a.aws.sigmacomputing.com">api.us-a.aws.sigmacomputing.com — AWS US East</option>
+              <option value="https://api.ca.aws.sigmacomputing.com">api.ca.aws.sigmacomputing.com — AWS Canada</option>
+              <option value="https://api.eu.aws.sigmacomputing.com">api.eu.aws.sigmacomputing.com — AWS Europe</option>
+              <option value="https://api.au.aws.sigmacomputing.com">api.au.aws.sigmacomputing.com — AWS Australia / APAC</option>
+              <option value="https://api.uk.aws.sigmacomputing.com">api.uk.aws.sigmacomputing.com — AWS UK</option>
+            </optgroup>
+            <optgroup label="Azure">
+              <option value="https://api.us.azure.sigmacomputing.com">api.us.azure.sigmacomputing.com — Azure US</option>
+              <option value="https://api.eu.azure.sigmacomputing.com">api.eu.azure.sigmacomputing.com — Azure Europe</option>
+              <option value="https://api.ca.azure.sigmacomputing.com">api.ca.azure.sigmacomputing.com — Azure Canada</option>
+              <option value="https://api.uk.azure.sigmacomputing.com">api.uk.azure.sigmacomputing.com — Azure UK</option>
+            </optgroup>
+          </select>
+          <p class="region-hint">This is the API base URL for your org, not the app URL. <a href="https://help.sigmacomputing.com/reference/get-started-sigma-api#identify-your-api-request-url" target="_blank" rel="noopener" style="color:#7c3aed">How to find yours ↗</a></p>
+        </div>
 
-    <div id="progress">
-      <div class="progress-header">
-        <div class="spinner"></div>
-        <span>Validation in progress…</span>
+        <hr class="divider" />
+        <button type="submit" id="runBtn">Run Validation</button>
+      </form>
+
+      <div id="progress">
+        <div class="progress-header">
+          <div class="spinner"></div>
+          <span id="progress-label">Validation in progress…</span>
+        </div>
+        <ol class="steps" id="steps-list">
+          <li class="step" id="step-0">
+            <span class="step-icon"><span class="step-num">1</span></span>
+            <span class="step-label">Authenticate</span>
+            <span class="step-detail" id="step-detail-0"></span>
+          </li>
+          <li class="step" id="step-1">
+            <span class="step-icon"><span class="step-num">2</span></span>
+            <span class="step-label">Discover models</span>
+            <span class="step-detail" id="step-detail-1"></span>
+          </li>
+          <li class="step" id="step-2">
+            <span class="step-icon"><span class="step-num">3</span></span>
+            <span class="step-label">Blast radius</span>
+            <span class="step-detail" id="step-detail-2"></span>
+          </li>
+          <li class="step" id="step-3">
+            <span class="step-icon"><span class="step-num">4</span></span>
+            <span class="step-label">Schema drift</span>
+            <span class="step-detail" id="step-detail-3"></span>
+          </li>
+          <li class="step" id="step-4">
+            <span class="step-icon"><span class="step-num">5</span></span>
+            <span class="step-label">Formula check</span>
+            <span class="step-detail" id="step-detail-4"></span>
+          </li>
+          <li class="step" id="step-5">
+            <span class="step-icon"><span class="step-num">6</span></span>
+            <span class="step-label">Generate report</span>
+            <span class="step-detail" id="step-detail-5"></span>
+          </li>
+        </ol>
+        <div id="log"></div>
       </div>
-      <div id="log"></div>
+      <div id="error-msg"></div>
     </div>
-    <div id="error-msg"></div>
   </div>
 
   <script>
-    const form = document.getElementById('form');
-    const runBtn = document.getElementById('runBtn');
+    const form       = document.getElementById('form');
+    const runBtn     = document.getElementById('runBtn');
     const progressEl = document.getElementById('progress');
-    const logEl = document.getElementById('log');
-    const errorEl = document.getElementById('error-msg');
+    const logEl      = document.getElementById('log');
+    const errorEl    = document.getElementById('error-msg');
+
+    // Step keyword matching — ordered to match the <ol> above
+    const STEP_KEYWORDS = [
+      ['authenticat'],
+      ['fetching data model', 'found ', 'data model'],
+      ['blast', 'content', 'workbook', 'scanning'],
+      ['drift', 'schema'],
+      ['formula'],
+      ['report', 'generating'],
+    ];
+    let currentStep = -1;
+
+    function advanceStep(text) {
+      const lower = text.toLowerCase();
+      for (let i = currentStep + 1; i < STEP_KEYWORDS.length; i++) {
+        if (STEP_KEYWORDS[i].some(kw => lower.includes(kw))) {
+          // Mark previous step done
+          if (currentStep >= 0) {
+            const prev = document.getElementById('step-' + currentStep);
+            if (prev) {
+              prev.classList.remove('active');
+              prev.classList.add('done');
+              prev.querySelector('.step-num').textContent = '✓';
+            }
+          }
+          // Activate new step
+          const el = document.getElementById('step-' + i);
+          if (el) {
+            el.classList.add('active');
+            const numEl = el.querySelector('.step-num');
+            numEl.innerHTML = '<span class="step-spinner"></span>';
+            numEl.style.background = 'transparent';
+          }
+          currentStep = i;
+          // Extract a short detail string from text like "model 3/12"
+          const mDetail = text.match(/model (\\d+\\/\\d+)/i) || text.match(/(\\d+ .+found)/i);
+          if (mDetail) {
+            const det = document.getElementById('step-detail-' + i);
+            if (det) det.textContent = mDetail[1];
+          }
+          break;
+        }
+      }
+    }
 
     function addLog(text) {
       const line = document.createElement('div');
@@ -169,6 +318,18 @@ const LANDING_HTML = `<!DOCTYPE html>
       logEl.scrollTop = logEl.scrollHeight;
     }
 
+    function markStepError() {
+      if (currentStep >= 0) {
+        const el = document.getElementById('step-' + currentStep);
+        if (el) {
+          el.classList.remove('active');
+          el.classList.add('error');
+          const numEl = el.querySelector('.step-num') || el.querySelector('.step-spinner')?.parentElement;
+          if (numEl) { numEl.innerHTML = '✗'; numEl.style.background = '#fc8181'; numEl.style.color = '#fff'; }
+        }
+      }
+    }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       runBtn.disabled = true;
@@ -176,11 +337,23 @@ const LANDING_HTML = `<!DOCTYPE html>
       progressEl.style.display = 'block';
       errorEl.style.display = 'none';
       logEl.innerHTML = '';
+      currentStep = -1;
+      // Reset steps
+      for (let i = 0; i < 6; i++) {
+        const el = document.getElementById('step-' + i);
+        if (el) {
+          el.className = 'step';
+          const numEl = el.querySelector('.step-num') || el.querySelector('.step-spinner')?.parentElement;
+          if (numEl) { numEl.innerHTML = (i + 1).toString(); numEl.style.background = ''; numEl.style.color = ''; }
+          const det = document.getElementById('step-detail-' + i);
+          if (det) det.textContent = '';
+        }
+      }
 
       const body = {
         clientId: document.getElementById('clientId').value,
         clientSecret: document.getElementById('clientSecret').value,
-        baseUrl: document.getElementById('baseUrl').value || undefined,
+        baseUrl: document.getElementById('baseUrl').value,
       };
 
       try {
@@ -205,19 +378,19 @@ const LANDING_HTML = `<!DOCTYPE html>
 
           for (const block of events) {
             const eventLine = block.match(/^event: (.+)/m);
-            const dataLine = block.match(/^data: (.+)/m);
+            const dataLine  = block.match(/^data: (.+)/m);
             if (!eventLine || !dataLine) continue;
             const eventType = eventLine[1].trim();
             const data = JSON.parse(dataLine[1]);
 
             if (eventType === 'progress') {
+              advanceStep(data);
               addLog(data);
-            } else if (eventType === 'done') {
-              document.open();
-              document.write(data);
-              document.close();
+            } else if (eventType === 'redirect') {
+              window.location.href = data;
               return;
             } else if (eventType === 'error') {
+              markStepError();
               throw new Error(data);
             }
           }
@@ -291,12 +464,27 @@ app.post("/api/validate", async (req, res) => {
 
     send("progress", "Generating report…");
     const html = toHtmlReport(contentReport, driftReport, { sessionId, formulaReport });
-    send("done", html);
+
+    // Store the HTML and send a redirect URL rather than the full HTML over SSE.
+    // document.write() is unreliable for large documents; a normal GET request is not.
+    const reportId = randomUUID();
+    reports.set(reportId, { html, createdAt: Date.now() });
+    send("redirect", `/r/${reportId}`);
   } catch (err) {
     send("error", (err as Error).message);
   }
 
   res.end();
+});
+
+app.get("/r/:reportId", (req, res) => {
+  const report = reports.get(req.params["reportId"] ?? "");
+  if (!report) {
+    res.status(404).send("Report not found or expired. Please re-run validation.");
+    return;
+  }
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.send(report.html);
 });
 
 app.post("/api/fix", async (req, res) => {

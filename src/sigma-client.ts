@@ -99,6 +99,15 @@ export interface TableColumn {
   [key: string]: unknown;
 }
 
+/** Entry from GET /v2/dataModels/{id}/columns */
+export interface DataModelColumn {
+  elementId: string;
+  columnId: string;
+  name: string;
+  label?: string;
+  formula?: string;
+}
+
 export interface PaginatedResponse<T> {
   entries: T[];
   nextPage?: string;
@@ -193,6 +202,10 @@ export class SigmaClient {
     return this.get<DataModelSpec>(`/v3alpha/datamodels/${id}/spec`);
   }
 
+  async getDataModelColumns(id: string): Promise<DataModelColumn[]> {
+    return this.getAllPages<DataModelColumn>(`/v2/dataModels/${id}/columns`);
+  }
+
   async getDataModelLineage(id: string): Promise<LineageResponse> {
     return this.getAllPages<LineageEntry>(`/v2/dataModels/${id}/lineage`).then(
       (entries) => ({ entries })
@@ -212,14 +225,22 @@ export class SigmaClient {
   }
 
   async updateDataModelSpec(id: string, spec: DataModelSpec): Promise<void> {
-    const response = await fetch(`${this.baseUrl}/v2/dataModels/${id}/spec`, {
-      method: "PUT",
-      headers: this.getHeaders(),
-      body: JSON.stringify(spec),
-    });
+    // Try v3alpha first (matches the read endpoint so the spec round-trips cleanly).
+    // Fall back to v2 if v3alpha returns 404 or 405 (method not allowed).
+    const v3alphaUrl = `${this.baseUrl}/v3alpha/datamodels/${id}/spec`;
+    const v2Url      = `${this.baseUrl}/v2/dataModels/${id}/spec`;
+
+    const attemptPut = async (url: string) =>
+      fetch(url, { method: "PUT", headers: this.getHeaders(), body: JSON.stringify(spec) });
+
+    let response = await attemptPut(v3alphaUrl);
+    if (response.status === 404 || response.status === 405) {
+      response = await attemptPut(v2Url);
+    }
+
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`PUT /v2/dataModels/${id}/spec failed (${response.status}): ${text}`);
+      throw new Error(`updateDataModelSpec failed (${response.status}) for model ${id}: ${text}`);
     }
   }
 }

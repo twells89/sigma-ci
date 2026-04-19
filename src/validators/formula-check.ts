@@ -1,5 +1,5 @@
 import { SigmaClient } from "../sigma-client.js";
-import type { DataModel, SpecColumn, SpecMetric } from "../sigma-client.js";
+import type { DataModel, DataModelColumn, SpecColumn, SpecMetric } from "../sigma-client.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -39,6 +39,20 @@ export interface FormulaCheckReport {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
+ * Extract column aliases from a SQL SELECT statement.
+ * Handles: expr AS alias, expr AS "alias", expr AS `alias`
+ * Bare column names without AS are omitted — those appear in element.columns.
+ */
+function extractSqlAliases(sql: string): string[] {
+  const aliases: string[] = [];
+  for (const m of sql.matchAll(/\bAS\s+["'`]?(\w[\w ]*)["'`]?/gi)) {
+    const alias = m[1].trim();
+    if (alias) aliases.push(alias);
+  }
+  return aliases;
+}
+
+/**
  * Extract single-level column references from a Sigma formula.
  * Matches [Ref Name] but NOT [Table/Col] (cross-element refs).
  */
@@ -54,6 +68,25 @@ function extractSimpleRefs(formula: string): string[] {
     }
   }
   return result;
+}
+
+/**
+ * Normalize a column reference for existence checking.
+ *
+ * Sigma auto-generates display names from warehouse column names by
+ * title-casing and replacing underscores with spaces:
+ *   TOTAL_NET_REVENUE  →  "Total Net Revenue"
+ *
+ * Passthrough column formulas in the spec keep the warehouse name
+ * (e.g. [TABLE/TOTAL_NET_REVENUE]), so getColumnDisplayName returns
+ * "TOTAL_NET_REVENUE".  Meanwhile, calculated formulas written in the
+ * Sigma UI use the display name: [Total Net Revenue].
+ *
+ * Stripping spaces, underscores, and lowercasing both sides lets these
+ * match without conflating genuinely different columns.
+ */
+function normalizeRef(s: string): string {
+  return s.toLowerCase().replace(/[\s_]+/g, "");
 }
 
 /** Levenshtein distance (space-optimised). */
@@ -87,11 +120,16 @@ function findSuggestion(
   if (!bestName) return null;
   const maxLen = Math.max(broken.length, bestName.length);
   const similarity = maxLen === 0 ? 1 : 1 - bestDist / maxLen;
-  return similarity >= 0.4 ? { name: bestName, similarity } : null;
+  return similarity >= 0.55 ? { name: bestName, similarity } : null;
 }
 
 function getColumnDisplayName(col: SpecColumn | SpecMetric): string | null {
   if (col.name) return col.name;
+  // Derive display name from passthrough formula: [TABLE/Col Name] → "Col Name", or [Col Name] → "Col Name"
+  if (col.formula) {
+    const m = col.formula.match(/^\[(?:[^\]/]+\/)?([^\]/]+)\]$/);
+    if (m) return m[1].trim();
+  }
   return null;
 }
 
@@ -110,27 +148,58 @@ export async function runFormulaCheck(
     onProgress?.(`Checking formula references: model ${i + 1}/${models.length}…`);
 
     try {
-      const spec = await client.getDataModelSpec(model.dataModelId);
+      // Fetch spec (for element structure/SQL sources) and the authoritative
+      // columns list in parallel.  The /v2/dataModels/{id}/columns endpoint
+      // returns every column with its exact Sigma display name, grouped by
+      // elementId — far more accurate than deriving names from spec formulas.
+      const [spec, apiCols] = await Promise.all([
+        client.getDataModelSpec(model.dataModelId),
+        client.getDataModelColumns(model.dataModelId).catch(() => [] as DataModelColumn[]),
+      ]);
+
+      // Build elementId → column name set from the API result.
+      const apiColsByElement = new Map<string, string[]>();
+      for (const col of apiCols) {
+        const list = apiColsByElement.get(col.elementId) ?? [];
+        list.push(col.name);
+        apiColsByElement.set(col.elementId, list);
+      }
+
       const modelElements: FormulaElementResult[] = [];
 
       for (const page of spec.pages ?? []) {
         for (const element of page.elements ?? []) {
-          // Build set of available column names in this element (case-insensitive lookup)
-          const availableNames: string[] = [];
-          const availableLower = new Set<string>();
+          // Seed available names from the columns API (authoritative).
+          const availableNames: string[] = [...(apiColsByElement.get(element.id) ?? [])];
+          const availableNormalized = new Set(availableNames.map(normalizeRef));
 
-          for (const col of element.columns ?? []) {
-            const name = getColumnDisplayName(col);
-            if (name) {
-              availableNames.push(name);
-              availableLower.add(name.toLowerCase());
-            }
-          }
+          // Supplement with metric names from the spec — the columns API only
+          // returns columns, not aggregated metrics.
           for (const metric of element.metrics ?? []) {
             const name = getColumnDisplayName(metric);
-            if (name) {
+            if (name && !availableNormalized.has(normalizeRef(name))) {
               availableNames.push(name);
-              availableLower.add(name.toLowerCase());
+              availableNormalized.add(normalizeRef(name));
+            }
+          }
+
+          // For custom SQL sources the columns API may not include SQL-derived
+          // columns (e.g. AS-aliased aggregates).  Extract them from the SQL.
+          if (element.source?.statement) {
+            for (const alias of extractSqlAliases(element.source.statement as string)) {
+              if (!availableNormalized.has(normalizeRef(alias))) {
+                availableNames.push(alias);
+                availableNormalized.add(normalizeRef(alias));
+              }
+            }
+          }
+
+          // Fallback: if the columns API returned nothing for this element
+          // (e.g., API error or empty element), derive names from the spec.
+          if (availableNames.length === 0) {
+            for (const col of element.columns ?? []) {
+              const name = getColumnDisplayName(col);
+              if (name) { availableNames.push(name); availableNormalized.add(normalizeRef(name)); }
             }
           }
 
@@ -147,10 +216,23 @@ export async function runFormulaCheck(
               const refs = extractSimpleRefs(formula);
               if (refs.length === 0) continue;
 
+              // Exclude columns already used as valid refs in this formula from
+              // the suggestion pool — prevents e.g. suggesting "Start Date" as a
+              // replacement for the broken [End Date] in DateDiff("day",[Start Date],[End Date]).
+              // Also exclude the column's own name — suggesting it would create a circular ref.
+              const ownNorm = normalizeRef(getColumnDisplayName(item) ?? "");
+              const validRefNorms = new Set(
+                refs.filter((r) => availableNormalized.has(normalizeRef(r))).map(normalizeRef)
+              );
+              const suggestionCandidates = availableNames.filter((n) => {
+                const nn = normalizeRef(n);
+                return !validRefNorms.has(nn) && nn !== ownNorm;
+              });
+
               const broken: BrokenRef[] = [];
               for (const ref of refs) {
-                if (!availableLower.has(ref.toLowerCase())) {
-                  const suggestion = findSuggestion(ref, availableNames);
+                if (!availableNormalized.has(normalizeRef(ref))) {
+                  const suggestion = findSuggestion(ref, suggestionCandidates);
                   broken.push({
                     ref,
                     suggestion: suggestion?.name ?? null,
