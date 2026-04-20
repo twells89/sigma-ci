@@ -340,6 +340,17 @@ const LANDING_HTML = `<!DOCTYPE html>
           break;
         }
       }
+      // Update the detail counter on the *current* active step even when the
+      // step doesn't change — e.g. "model 92/1128" messages while schema drift
+      // is already active.  The loop above starts at currentStep+1 so it never
+      // re-visits the active step, causing the detail to freeze at the first value.
+      if (currentStep >= 0 && STEP_KEYWORDS[currentStep].some(kw => lower.includes(kw))) {
+        const mDetail = text.match(/model (\\d+\\/\\d+)/i) || text.match(/(\\d+ .+found)/i);
+        if (mDetail) {
+          const det = document.getElementById('step-detail-' + currentStep);
+          if (det) det.textContent = mDetail[1];
+        }
+      }
     }
 
     function addLog(text) {
