@@ -57,6 +57,12 @@ export async function runSchemaDriftValidation(
 ): Promise<DriftReport> {
   const results: DriftModelResult[] = [];
 
+  // Cache table columns by inodeId across all models.
+  // Large orgs share the same physical tables (e.g. CUSTOMER_DIM) across many data
+  // models — without a cache every element in every model fires a separate API call,
+  // which immediately exhausts Sigma/Cloudflare's rate limit.
+  const tableColumnsCache = new Map<string, string[]>();
+
   for (let i = 0; i < modelIds.length; i++) {
     const modelId = modelIds[i];
     let modelName = modelId;
@@ -98,16 +104,24 @@ export async function runSchemaDriftValidation(
 
           if (referencedCols.size === 0) continue;
 
-          // Fetch actual columns from the warehouse via Sigma's connection API
+          // Fetch actual columns from the warehouse via Sigma's connection API.
+          // Use the shared cache so the same physical table is only fetched once
+          // across all models — avoids redundant requests and rate-limit storms on large orgs.
           let actualCols: string[] = [];
           if (inodeId) {
-            try {
-              const warehouseCols = await client.getTableColumns(inodeId);
-              actualCols = warehouseCols.map((c) => c.name.toUpperCase().replace(/[ /]/g, "_"));
-            } catch (e) {
-              console.error(
-                `  [drift] Could not fetch columns for table ${tableName}: ${(e as Error).message}`
-              );
+            if (tableColumnsCache.has(inodeId)) {
+              actualCols = tableColumnsCache.get(inodeId)!;
+            } else {
+              try {
+                const warehouseCols = await client.getTableColumns(inodeId);
+                actualCols = warehouseCols.map((c) => c.name.toUpperCase().replace(/[ /]/g, "_"));
+                tableColumnsCache.set(inodeId, actualCols);
+              } catch (e) {
+                console.error(
+                  `  [drift] Could not fetch columns for table ${tableName}: ${(e as Error).message}`
+                );
+                // Don't cache failures — let a later model retry once rate limit clears
+              }
             }
           }
 

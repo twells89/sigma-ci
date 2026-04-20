@@ -160,16 +160,37 @@ export class SigmaClient {
     };
   }
 
-  private async get<T>(path: string): Promise<T> {
-    const response = await fetch(`${this.baseUrl}${path}`, {
-      method: "GET",
-      headers: this.getHeaders(),
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`GET ${path} failed (${response.status}): ${text}`);
+  private async get<T>(path: string, retries = 4): Promise<T> {
+    let lastError: Error = new Error("unreachable");
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: "GET",
+        headers: this.getHeaders(),
+      });
+
+      if (response.status === 429) {
+        // Respect Retry-After header if present, otherwise use exponential back-off
+        const retryAfterSec = parseInt(response.headers.get("Retry-After") ?? "0", 10);
+        const delayMs = retryAfterSec > 0
+          ? retryAfterSec * 1000
+          : Math.min(1000 * Math.pow(2, attempt), 30_000); // 1s, 2s, 4s … up to 30s
+        console.error(`  [rate-limit] 429 on ${path} — waiting ${delayMs}ms (attempt ${attempt + 1}/${retries + 1})`);
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, delayMs));
+          continue;
+        }
+        const text = await response.text();
+        lastError = new Error(`GET ${path} failed (429 — rate limited after ${retries + 1} attempts): ${text.slice(0, 200)}`);
+        break;
+      }
+
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`GET ${path} failed (${response.status}): ${text}`);
+      }
+      return response.json() as Promise<T>;
     }
-    return response.json() as Promise<T>;
+    throw lastError;
   }
 
   private async getAllPages<T>(firstPath: string): Promise<T[]> {
