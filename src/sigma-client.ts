@@ -191,11 +191,11 @@ export class SigmaClient {
   }
 
   async listDataModels(): Promise<DataModel[]> {
-    return this.getAllPages<DataModel>("/v2/dataModels");
+    return this.getAllPages<DataModel>("/v2/dataModels?skipPermissionCheck=true");
   }
 
   async listWorkbooks(): Promise<Workbook[]> {
-    return this.getAllPages<Workbook>("/v2/workbooks");
+    return this.getAllPages<Workbook>("/v2/workbooks?skipPermissionCheck=true");
   }
 
   async getDataModelSpec(id: string): Promise<DataModelSpec> {
