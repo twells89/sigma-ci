@@ -171,6 +171,14 @@ runs:
           echo "__SIGMA_EOF__"
         } >> "$GITHUB_OUTPUT"
 
+        # Write to Actions Step Summary so the report is visible in the GitHub UI
+        # without needing to open a PR or dig through logs.
+        {
+          echo "## Sigma Sentinel — Model Health"
+          echo ""
+          echo "$MARKDOWN"
+        } >> "$GITHUB_STEP_SUMMARY"
+
         # Fail if drift detected and fail-on-drift is enabled
         if [ "$HAS_DRIFT" = "true" ] && [ "${{ inputs.fail-on-drift }}" = "true" ]; then
           echo "::error::Schema drift detected — merge blocked until drift is resolved."

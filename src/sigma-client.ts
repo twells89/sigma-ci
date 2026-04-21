@@ -168,19 +168,20 @@ export class SigmaClient {
         headers: this.getHeaders(),
       });
 
-      if (response.status === 429) {
-        // Respect Retry-After header if present, otherwise use exponential back-off
+      // Retry on rate-limit (429) and transient server errors (502/503/504)
+      if (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) {
         const retryAfterSec = parseInt(response.headers.get("Retry-After") ?? "0", 10);
         const delayMs = retryAfterSec > 0
           ? retryAfterSec * 1000
           : Math.min(1000 * Math.pow(2, attempt), 30_000); // 1s, 2s, 4s … up to 30s
-        console.error(`  [rate-limit] 429 on ${path} — waiting ${delayMs}ms (attempt ${attempt + 1}/${retries + 1})`);
+        const label = response.status === 429 ? "rate-limit" : "transient";
+        console.error(`  [${label}] ${response.status} on ${path} — waiting ${delayMs}ms (attempt ${attempt + 1}/${retries + 1})`);
         if (attempt < retries) {
           await new Promise((r) => setTimeout(r, delayMs));
           continue;
         }
         const text = await response.text();
-        lastError = new Error(`GET ${path} failed (429 — rate limited after ${retries + 1} attempts): ${text.slice(0, 200)}`);
+        lastError = new Error(`GET ${path} failed (${response.status} after ${retries + 1} attempts): ${text.slice(0, 200)}`);
         break;
       }
 
