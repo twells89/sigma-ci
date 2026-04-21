@@ -31,9 +31,6 @@ outputs:
   report-markdown:
     description: 'Validation summary formatted as GitHub-flavoured markdown'
     value: ${{ steps.run.outputs.report_markdown }}
-  report-json:
-    description: 'Full validation report as a JSON string'
-    value: ${{ steps.run.outputs.report_json }}
 
 runs:
   using: composite
@@ -63,32 +60,25 @@ runs:
           ARGS="--all"
         fi
 
-        # Run — progress goes to stderr (visible in Actions log), JSON report to stdout
-        REPORT=$(node dist/index.js validate $ARGS --format json 2>/tmp/sigma-sentinel.log || true)
+        # Run — progress goes to stderr (visible in Actions log), JSON report written to a
+        # temp file to avoid large-variable bash pitfalls (SIGPIPE, ARG_MAX, shell limits).
+        REPORT_FILE=/tmp/sigma-report.json
+        node dist/index.js validate $ARGS --format json > "$REPORT_FILE" 2>/tmp/sigma-sentinel.log || true
         cat /tmp/sigma-sentinel.log >&2
 
-        # Store raw JSON
-        {
-          echo "report_json<<__SIGMA_EOF__"
-          echo "$REPORT"
-          echo "__SIGMA_EOF__"
-        } >> "$GITHUB_OUTPUT"
-
-        # Parse has-drift and has-formula-errors in one Node pass
-        PARSED=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
-          import { createInterface } from 'readline';
-          let d = '';
-          const rl = createInterface({ input: process.stdin });
-          rl.on('line', l => d += l + '\n');
-          rl.on('close', () => {
-            try {
-              const r = JSON.parse(d);
-              const hasDrift = r.schemaDrift?.models?.some(m => m.hasDrift) ?? false;
-              const hasFormula = (r.formulaCheck?.models ?? []).some(m => m.totalBroken > 0);
-              console.log(String(hasDrift));
-              console.log(String(hasFormula));
-            } catch { console.log('false\nfalse'); }
-          });
+        # Parse has-drift and has-formula-errors by reading the file directly.
+        # NOTE: do NOT pipe $REPORT through echo into a node heredoc — the heredoc
+        # overrides stdin for --input-type=module, leaving echo writing to an
+        # abandoned pipe (SIGPIPE / "write error: Broken pipe").
+        PARSED=$(node --input-type=module << 'JSEOF'
+          import { readFileSync } from 'fs';
+          try {
+            const r = JSON.parse(readFileSync('/tmp/sigma-report.json', 'utf8'));
+            const hasDrift = r.schemaDrift?.models?.some(m => m.hasDrift) ?? false;
+            const hasFormula = (r.formulaCheck?.models ?? []).some(m => m.totalBroken > 0);
+            console.log(String(hasDrift));
+            console.log(String(hasFormula));
+          } catch { console.log('false\nfalse'); }
         JSEOF
         )
         HAS_DRIFT=$(echo "$PARSED" | sed -n '1p')
@@ -97,84 +87,81 @@ runs:
         echo "has_formula_errors=$HAS_FORMULA_ERRORS" >> "$GITHUB_OUTPUT"
 
         # Build markdown summary
-        MARKDOWN=$(echo "$REPORT" | node --input-type=module << 'JSEOF'
-          import { createInterface } from 'readline';
-          let d = '';
-          const rl = createInterface({ input: process.stdin });
-          rl.on('line', l => d += l + '\n');
-          rl.on('close', () => {
-            try {
-              const r = JSON.parse(d);
-              const lines = [];
+        MARKDOWN=$(node --input-type=module << 'JSEOF'
+          import { readFileSync } from 'fs';
+          try {
+            const r = JSON.parse(readFileSync('/tmp/sigma-report.json', 'utf8'));
+            const lines = [];
 
-              // Schema drift section
-              const driftModels = r.schemaDrift?.models ?? [];
-              const drifted = driftModels.filter(m => m.hasDrift);
-              if (drifted.length > 0) {
-                lines.push('### ⚠️ Schema Drift Detected');
-                lines.push('');
-                lines.push('Warehouse columns referenced in the model no longer exist:');
-                lines.push('');
-                for (const m of drifted) {
-                  lines.push(`**${m.modelName}**`);
-                  for (const t of m.tables.filter(t => t.missingColumns.length > 0)) {
-                    const cols = t.missingColumns.map(c => `\`${c}\``).join(', ');
-                    lines.push(`- \`${t.tableName}\`: ${cols}`);
-                  }
-                  lines.push('');
-                }
-              } else if (driftModels.length > 0) {
-                lines.push('### ✅ No Schema Drift');
-                lines.push('');
-                lines.push('All referenced warehouse columns exist.');
-                lines.push('');
-              }
-
-              // Blast radius section
-              const contentModels = r.content?.models ?? [];
-              const withImpact = contentModels.filter(m => (m.directWorkbooks ?? 0) + (m.transitiveWorkbooks ?? 0) > 0);
-              if (withImpact.length > 0) {
-                lines.push('### 📊 Blast Radius');
-                lines.push('');
-                lines.push('Workbooks affected by changes to these models:');
-                lines.push('');
-                for (const m of withImpact) {
-                  lines.push(`- **${m.modelName}**: ${m.directWorkbooks} direct, ${m.transitiveWorkbooks} transitive workbook(s)`);
+            // Schema drift section
+            const driftModels = r.schemaDrift?.models ?? [];
+            const drifted = driftModels.filter(m => m.hasDrift);
+            if (drifted.length > 0) {
+              lines.push('### ⚠️ Schema Drift Detected');
+              lines.push('');
+              lines.push('Warehouse columns referenced in the model no longer exist:');
+              lines.push('');
+              for (const m of drifted) {
+                lines.push(`**${m.modelName}**`);
+                for (const t of m.tables.filter(t => t.missingColumns.length > 0)) {
+                  const cols = t.missingColumns.map(c => `\`${c}\``).join(', ');
+                  lines.push(`- \`${t.tableName}\`: ${cols}`);
                 }
                 lines.push('');
               }
-
-              // Formula check section
-              const formulaModels = r.formulaCheck?.models ?? [];
-              const withFormulaErrors = formulaModels.filter(m => m.totalBroken > 0);
-              if (withFormulaErrors.length > 0) {
-                lines.push('### 🔗 Broken Formula References');
-                lines.push('');
-                for (const m of withFormulaErrors) {
-                  lines.push(`**${m.modelName}** — ${m.totalBroken} broken reference(s)`);
-                  for (const el of m.elements) {
-                    for (const col of el.brokenColumns) {
-                      const refs = col.brokenRefs.map(ref => {
-                        const sug = ref.suggestion ? ` → \`${ref.suggestion}\`` : '';
-                        return `\`[${ref.ref}]\`${sug}`;
-                      }).join(', ');
-                      lines.push(`- _${el.elementName ?? el.elementId}_ / **${col.columnName ?? col.columnId}**: ${refs}`);
-                    }
-                  }
-                  lines.push('');
-                }
-              } else if (formulaModels.length > 0) {
-                lines.push('### ✅ No Broken Formula References');
-                lines.push('');
-                lines.push('All formula references resolve correctly.');
-                lines.push('');
-              }
-
-              console.log(lines.join('\n').trim());
-            } catch (e) {
-              console.log('_Could not parse validation report_');
+            } else if (driftModels.length > 0) {
+              lines.push('### ✅ No Schema Drift');
+              lines.push('');
+              lines.push('All referenced warehouse columns exist.');
+              lines.push('');
             }
-          });
+
+            // Blast radius section
+            const contentModels = r.content?.models ?? [];
+            const withImpact = contentModels.filter(m => (m.downstreamWorkbooks ?? []).length + (m.transitiveWorkbooks ?? []).length > 0);
+            if (withImpact.length > 0) {
+              lines.push('### 📊 Blast Radius');
+              lines.push('');
+              lines.push('Workbooks affected by changes to these models:');
+              lines.push('');
+              for (const m of withImpact) {
+                const direct = (m.downstreamWorkbooks ?? []).length;
+                const transitive = (m.transitiveWorkbooks ?? []).length;
+                lines.push(`- **${m.modelName}**: ${direct} direct, ${transitive} transitive workbook(s)`);
+              }
+              lines.push('');
+            }
+
+            // Formula check section
+            const formulaModels = r.formulaCheck?.models ?? [];
+            const withFormulaErrors = formulaModels.filter(m => m.totalBroken > 0);
+            if (withFormulaErrors.length > 0) {
+              lines.push('### 🔗 Broken Formula References');
+              lines.push('');
+              for (const m of withFormulaErrors) {
+                lines.push(`**${m.modelName}** — ${m.totalBroken} broken reference(s)`);
+                for (const el of m.elements) {
+                  for (const col of el.brokenColumns) {
+                    const refs = col.brokenRefs.map(ref => {
+                      const sug = ref.suggestion ? ` → \`${ref.suggestion}\`` : '';
+                      return `\`[${ref.ref}]\`${sug}`;
+                    }).join(', ');
+                    lines.push(`- _${el.elementName ?? el.elementId}_ / **${col.columnName ?? col.columnId}**: ${refs}`);
+                  }
+                }
+                lines.push('');
+              }
+            } else if (formulaModels.length > 0) {
+              lines.push('### ✅ No Broken Formula References');
+              lines.push('');
+              lines.push('All formula references resolve correctly.');
+              lines.push('');
+            }
+
+            console.log(lines.join('\n').trim());
+          } catch (e) {
+            console.log('_Could not parse validation report_');
+          }
         JSEOF
         )
 
