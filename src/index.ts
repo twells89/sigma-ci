@@ -151,14 +151,13 @@ program
       const runContent = !opts.driftOnly;
       const runDrift = !opts.contentOnly;
 
-      const [contentReport, driftReport] = await Promise.all([
-        runContent
-          ? runContentValidation(client, models, modelUrlMap)
-          : Promise.resolve({ models: [], modelDependencies: {}, generatedAt: new Date().toISOString() }),
-        runDrift
-          ? runSchemaDriftValidation(client, modelIds, modelUrlMap)
-          : Promise.resolve({ models: [], generatedAt: new Date().toISOString() }),
-      ]);
+      // Run sequentially to avoid concurrent API storms against the same rate-limit quota.
+      const contentReport = runContent
+        ? await runContentValidation(client, models, modelUrlMap)
+        : { models: [], modelDependencies: {}, generatedAt: new Date().toISOString() };
+      const driftReport = runDrift
+        ? await runSchemaDriftValidation(client, modelIds, modelUrlMap)
+        : { models: [], generatedAt: new Date().toISOString() };
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
 
@@ -213,10 +212,9 @@ program
 
       console.error(`Generating report for ${models.length} model(s)...`);
 
-      const [contentReport, driftReport] = await Promise.all([
-        runContentValidation(client, models, modelUrlMap),
-        runSchemaDriftValidation(client, modelIds, modelUrlMap),
-      ]);
+      // Run sequentially to avoid concurrent API storms against the same rate-limit quota.
+      const contentReport = await runContentValidation(client, models, modelUrlMap);
+      const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap);
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
 

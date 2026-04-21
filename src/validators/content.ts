@@ -64,7 +64,7 @@ export async function runContentValidation(
   // modelDeps: dependentModelId → Set<upstreamModelId>
   const modelDeps = new Map<string, Set<string>>();
 
-  const MDEP_BATCH = 10;
+  const MDEP_BATCH = 3;
   for (let i = 0; i < models.length; i += MDEP_BATCH) {
     const batch = models.slice(i, i + MDEP_BATCH);
     await Promise.all(batch.map(async (m) => {
