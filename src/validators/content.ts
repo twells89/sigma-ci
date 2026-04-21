@@ -66,6 +66,7 @@ export async function runContentValidation(
 
   const MDEP_BATCH = 3;
   for (let i = 0; i < models.length; i += MDEP_BATCH) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 500)); // brief pause between batches
     const batch = models.slice(i, i + MDEP_BATCH);
     await Promise.all(batch.map(async (m) => {
       try {
@@ -103,8 +104,9 @@ export async function runContentValidation(
   const wbToModels = new Map<string, Set<string>>();
   const wbById = new Map<string, Workbook>(workbooks.map((w) => [w.workbookId, w]));
 
-  const WB_BATCH = 20;
+  const WB_BATCH = 5;
   for (let i = 0; i < workbooks.length; i += WB_BATCH) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 500)); // brief pause between batches
     const batch = workbooks.slice(i, i + WB_BATCH);
     await Promise.all(batch.map(async (wb) => {
       try {
