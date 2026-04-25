@@ -60,6 +60,16 @@ async function runConcurrent(tasks: Array<() => Promise<void>>, concurrency: num
   await Promise.all(workers);
 }
 
+function buildTableNameToInodeId(lineage: LineageResponse): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const entry of lineage.entries) {
+    if (entry.type === "table" && entry.inodeId && entry.name) {
+      map.set(entry.name.toUpperCase(), entry.inodeId);
+    }
+  }
+  return map;
+}
+
 export async function runSchemaDriftValidation(
   client: SigmaClient,
   modelIds: string[],
@@ -67,26 +77,30 @@ export async function runSchemaDriftValidation(
   onProgress?: (msg: string) => void,
   opts?: { skipSync?: boolean }
 ): Promise<DriftReport> {
-  const results: DriftModelResult[] = [];
 
-  // Phase 1: fetch all specs + lineages upfront so we can collect sync targets
-  // before any column checks run.
+  // Phase 1: fetch all specs + lineages in parallel (15 concurrent).
+  // Previously sequential — with 181 models this was the dominant cost.
   onProgress?.(`Fetching specs for ${modelIds.length} model(s)...`);
   const specCache = new Map<string, DataModelSpec>();
   const lineageCache = new Map<string, LineageResponse>();
+  const inodeIdCache = new Map<string, Map<string, string>>(); // modelId → tableName → inodeId
 
-  for (const modelId of modelIds) {
-    try {
-      const [spec, lineage] = await Promise.all([
-        client.getDataModelSpec(modelId),
-        client.getDataModelLineage(modelId),
-      ]);
-      specCache.set(modelId, spec);
-      lineageCache.set(modelId, lineage);
-    } catch (e) {
-      console.error(`  [drift] Could not fetch spec/lineage for ${modelId}: ${(e as Error).message}`);
-    }
-  }
+  await runConcurrent(
+    modelIds.map((modelId) => async () => {
+      try {
+        const [spec, lineage] = await Promise.all([
+          client.getDataModelSpec(modelId),
+          client.getDataModelLineage(modelId),
+        ]);
+        specCache.set(modelId, spec);
+        lineageCache.set(modelId, lineage);
+        inodeIdCache.set(modelId, buildTableNameToInodeId(lineage));
+      } catch (e) {
+        console.error(`  [drift] Could not fetch spec/lineage for ${modelId}: ${(e as Error).message}`);
+      }
+    }),
+    15
+  );
 
   // Phase 2: sync all warehouse-table paths with Sigma so the column cache is
   // fresh before we query it. Fires up to 20 syncs concurrently; errors are
@@ -125,20 +139,49 @@ export async function runSchemaDriftValidation(
     }
   }
 
-  // Phase 3: drift check — compare model column references against Sigma's
-  // (now-refreshed) cached column lists.
+  // Phase 2.5: collect every unique inodeId referenced across all models and
+  // pre-fetch their column lists in parallel (15 concurrent). This turns Phase 3
+  // into a pure in-memory comparison with no async calls.
+  const allInodeIds = new Set<string>();
+  for (const [modelId, spec] of specCache) {
+    const tableNameToInodeId = inodeIdCache.get(modelId)!;
+    for (const page of spec.pages ?? []) {
+      for (const element of page.elements ?? []) {
+        if (element.source?.kind !== "warehouse-table") continue;
+        const path = element.source.path ?? [];
+        if (path.length === 0) continue;
+        const inodeId = tableNameToInodeId.get((path[path.length - 1] as string).toUpperCase());
+        if (inodeId) allInodeIds.add(inodeId);
+      }
+    }
+  }
+
+  onProgress?.(`Fetching column lists for ${allInodeIds.size} unique table(s)...`);
   const tableColumnsCache = new Map<string, string[]>();
 
-  for (let i = 0; i < modelIds.length; i++) {
-    const modelId = modelIds[i];
+  await runConcurrent(
+    [...allInodeIds].map((inodeId) => async () => {
+      try {
+        const cols = await client.getTableColumns(inodeId);
+        tableColumnsCache.set(inodeId, cols.map((c) => c.name.toUpperCase().replace(/[ /]/g, "_")));
+      } catch (e) {
+        console.error(`  [drift] Could not fetch columns for inode ${inodeId}: ${(e as Error).message}`);
+      }
+    }),
+    15
+  );
+
+  // Phase 3: pure in-memory comparison — no async calls.
+  onProgress?.(`Comparing column references for ${modelIds.length} model(s)...`);
+  const results: DriftModelResult[] = [];
+
+  for (const modelId of modelIds) {
     const spec = specCache.get(modelId);
-    const lineage = lineageCache.get(modelId);
+    const tableNameToInodeId = inodeIdCache.get(modelId);
     let modelName = modelId;
     const tables: DriftTable[] = [];
 
-    onProgress?.(`Checking schema drift: model ${i + 1}/${modelIds.length}...`);
-
-    if (!spec || !lineage) {
+    if (!spec || !tableNameToInodeId) {
       results.push({ modelId, modelName, modelUrl: modelUrlMap?.get(modelId), tables, hasDrift: false });
       continue;
     }
@@ -146,24 +189,15 @@ export async function runSchemaDriftValidation(
     try {
       modelName = spec.name ?? modelId;
 
-      // Build a map: table name (upper-case) → lineage inodeId
-      const tableNameToInodeId = new Map<string, string>();
-      for (const entry of lineage.entries) {
-        if (entry.type === "table" && entry.inodeId && entry.name) {
-          tableNameToInodeId.set(entry.name.toUpperCase(), entry.inodeId);
-        }
-      }
-
       for (const page of spec.pages ?? []) {
         for (const element of page.elements ?? []) {
           if (element.source?.kind !== "warehouse-table") continue;
 
           const path = element.source.path ?? [];
           if (path.length === 0) continue;
-          const tableName = path[path.length - 1];
+          const tableName = path[path.length - 1] as string;
           const inodeId = tableNameToInodeId.get(tableName.toUpperCase());
 
-          // Collect referenced warehouse columns from this element's columns
           const referencedCols = new Set<string>();
           for (const col of element.columns ?? []) {
             const colName = extractColumnName(col);
@@ -172,25 +206,7 @@ export async function runSchemaDriftValidation(
 
           if (referencedCols.size === 0) continue;
 
-          // Fetch actual columns from the warehouse via Sigma's connection API.
-          // Use the shared cache so the same physical table is only fetched once
-          // across all models — avoids redundant requests and rate-limit storms on large orgs.
-          let actualCols: string[] = [];
-          if (inodeId) {
-            if (tableColumnsCache.has(inodeId)) {
-              actualCols = tableColumnsCache.get(inodeId)!;
-            } else {
-              try {
-                const warehouseCols = await client.getTableColumns(inodeId);
-                actualCols = warehouseCols.map((c) => c.name.toUpperCase().replace(/[ /]/g, "_"));
-                tableColumnsCache.set(inodeId, actualCols);
-              } catch (e) {
-                console.error(
-                  `  [drift] Could not fetch columns for table ${tableName}: ${(e as Error).message}`
-                );
-              }
-            }
-          }
+          const actualCols = inodeId ? (tableColumnsCache.get(inodeId) ?? []) : [];
 
           // Safety: if warehouse returned no columns, skip — can't distinguish
           // a real empty table from a failed/inaccessible lookup.
@@ -209,9 +225,7 @@ export async function runSchemaDriftValidation(
         }
       }
     } catch (e) {
-      console.error(
-        `  [drift] Error during drift check for ${modelId}: ${(e as Error).message}`
-      );
+      console.error(`  [drift] Error during drift check for ${modelId}: ${(e as Error).message}`);
     }
 
     results.push({
