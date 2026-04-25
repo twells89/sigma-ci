@@ -99,7 +99,7 @@ export async function runSchemaDriftValidation(
         console.error(`  [drift] Could not fetch spec/lineage for ${modelId}: ${(e as Error).message}`);
       }
     }),
-    15
+    8
   );
 
   // Phase 2: sync all warehouse-table paths with Sigma so the column cache is
