@@ -20,6 +20,10 @@ inputs:
     description: 'Exit with a non-zero code if broken formula references are detected'
     required: false
     default: 'false'
+  skip-sync:
+    description: 'Skip pre-syncing table schemas with the warehouse before the drift check'
+    required: false
+    default: 'false'
 
 outputs:
   has-drift:
@@ -63,6 +67,7 @@ runs:
         # Run — progress goes to stderr (visible in Actions log), JSON report written to a
         # temp file to avoid large-variable bash pitfalls (SIGPIPE, ARG_MAX, shell limits).
         REPORT_FILE=/tmp/sigma-report.json
+        if [ "${{ inputs.skip-sync }}" = "true" ]; then ARGS="$ARGS --skip-sync"; fi
         node dist/index.js validate $ARGS --format json > "$REPORT_FILE" 2>/tmp/sigma-sentinel.log || true
         cat /tmp/sigma-sentinel.log >&2
 

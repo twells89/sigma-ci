@@ -246,6 +246,21 @@ export class SigmaClient {
     );
   }
 
+  async syncConnectionPath(connectionId: string, path: string[]): Promise<void> {
+    const response = await fetch(
+      `${this.baseUrl}/v2/connections/${connectionId}/sync`,
+      {
+        method: "POST",
+        headers: this.getHeaders(),
+        body: JSON.stringify({ path }),
+      }
+    );
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`sync failed (${response.status}): ${text}`);
+    }
+  }
+
   async updateDataModelSpec(id: string, spec: DataModelSpec): Promise<void> {
     // Try v3alpha first (matches the read endpoint so the spec round-trips cleanly).
     // Fall back to v2 if v3alpha returns 404 or 405 (method not allowed).

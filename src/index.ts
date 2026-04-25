@@ -117,6 +117,7 @@ program
   .option("--open", "Generate HTML report and open in browser")
   .option("--content-only", "Run only content validation")
   .option("--drift-only", "Run only schema drift validation")
+  .option("--skip-sync", "Skip pre-syncing table schemas before drift check")
   .action(
     async (opts: {
       model: string[];
@@ -125,6 +126,7 @@ program
       open: boolean;
       contentOnly: boolean;
       driftOnly: boolean;
+      skipSync: boolean;
     }) => {
       const format = opts.format as OutputFormat;
 
@@ -156,7 +158,7 @@ program
         ? await runContentValidation(client, models, modelUrlMap)
         : { models: [], modelDependencies: {}, generatedAt: new Date().toISOString() };
       const driftReport = runDrift
-        ? await runSchemaDriftValidation(client, modelIds, modelUrlMap)
+        ? await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync })
         : { models: [], generatedAt: new Date().toISOString() };
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
@@ -188,8 +190,9 @@ program
     "html"
   )
   .option("--open", "Open HTML report in browser (default for report command)")
+  .option("--skip-sync", "Skip pre-syncing table schemas before drift check")
   .action(
-    async (opts: { model: string[]; all: boolean; format: string; open: boolean }) => {
+    async (opts: { model: string[]; all: boolean; format: string; open: boolean; skipSync: boolean }) => {
       const format = opts.format as OutputFormat;
 
       if (opts.model.length === 0 && !opts.all) {
@@ -214,7 +217,7 @@ program
 
       // Run sequentially to avoid concurrent API storms against the same rate-limit quota.
       const contentReport = await runContentValidation(client, models, modelUrlMap);
-      const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap);
+      const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
 
