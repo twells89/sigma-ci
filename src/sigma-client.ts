@@ -184,13 +184,14 @@ export class SigmaClient {
   }
 
   private async get<T>(path: string, retries = 4): Promise<T> {
-    return this._throttle(async () => {
     let lastError: Error = new Error("unreachable");
     for (let attempt = 0; attempt <= retries; attempt++) {
-      const response = await fetch(`${this.baseUrl}${path}`, {
-        method: "GET",
-        headers: this.getHeaders(),
-      });
+      // Acquire a slot only for the duration of the HTTP round-trip, not during
+      // backoff delays — releasing during backoff lets other requests proceed
+      // instead of stacking up and re-bursting when the delay expires.
+      const response = await this._throttle(() =>
+        fetch(`${this.baseUrl}${path}`, { method: "GET", headers: this.getHeaders() })
+      );
 
       // Retry on rate-limit (429) and transient server errors (502/503/504)
       if (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) {
@@ -216,7 +217,6 @@ export class SigmaClient {
       return response.json() as Promise<T>;
     }
     throw lastError;
-    }); // _throttle
   }
 
   private async getAllPages<T>(firstPath: string): Promise<T[]> {
