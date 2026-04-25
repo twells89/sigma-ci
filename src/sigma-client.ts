@@ -123,6 +123,25 @@ export class SigmaClient {
   // and spec data; caching here eliminates the duplicate API calls entirely.
   private _lineageCache = new Map<string, LineageResponse>();
   private _specCache = new Map<string, DataModelSpec>();
+  // Global concurrency semaphore — all validators share one SigmaClient, so
+  // capping in-flight requests here prevents any combination of concurrent
+  // validator calls from bursting past the API rate limit.
+  private _slots = 5;
+  private _waiting: Array<() => void> = [];
+
+  private async _throttle<T>(fn: () => Promise<T>): Promise<T> {
+    if (this._slots > 0) {
+      this._slots--;
+    } else {
+      await new Promise<void>((r) => this._waiting.push(r));
+    }
+    try {
+      return await fn();
+    } finally {
+      const next = this._waiting.shift();
+      if (next) { next(); } else { this._slots++; }
+    }
+  }
 
   constructor(config: SigmaClientConfig) {
     this.clientId = config.clientId;
@@ -165,6 +184,7 @@ export class SigmaClient {
   }
 
   private async get<T>(path: string, retries = 4): Promise<T> {
+    return this._throttle(async () => {
     let lastError: Error = new Error("unreachable");
     for (let attempt = 0; attempt <= retries; attempt++) {
       const response = await fetch(`${this.baseUrl}${path}`, {
@@ -196,6 +216,7 @@ export class SigmaClient {
       return response.json() as Promise<T>;
     }
     throw lastError;
+    }); // _throttle
   }
 
   private async getAllPages<T>(firstPath: string): Promise<T[]> {
