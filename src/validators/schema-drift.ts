@@ -165,7 +165,7 @@ export async function runSchemaDriftValidation(
         console.error(`  [drift] Could not fetch columns for inode ${inodeId}: ${(e as Error).message}`);
       }
     }),
-    15
+    8
   );
 
   // Phase 3: pure in-memory comparison — no async calls.
