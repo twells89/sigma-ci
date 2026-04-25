@@ -85,22 +85,19 @@ export async function runSchemaDriftValidation(
   const lineageCache = new Map<string, LineageResponse>();
   const inodeIdCache = new Map<string, Map<string, string>>(); // modelId → tableName → inodeId
 
-  await runConcurrent(
-    modelIds.map((modelId) => async () => {
-      try {
-        const [spec, lineage] = await Promise.all([
-          client.getDataModelSpec(modelId),
-          client.getDataModelLineage(modelId),
-        ]);
-        specCache.set(modelId, spec);
-        lineageCache.set(modelId, lineage);
-        inodeIdCache.set(modelId, buildTableNameToInodeId(lineage));
-      } catch (e) {
-        console.error(`  [drift] Could not fetch spec/lineage for ${modelId}: ${(e as Error).message}`);
-      }
-    }),
-    8
-  );
+  for (const modelId of modelIds) {
+    try {
+      const [spec, lineage] = await Promise.all([
+        client.getDataModelSpec(modelId),
+        client.getDataModelLineage(modelId),  // cache hit if content validator ran first
+      ]);
+      specCache.set(modelId, spec);
+      lineageCache.set(modelId, lineage);
+      inodeIdCache.set(modelId, buildTableNameToInodeId(lineage));
+    } catch (e) {
+      console.error(`  [drift] Could not fetch spec/lineage for ${modelId}: ${(e as Error).message}`);
+    }
+  }
 
   // Phase 2: sync all warehouse-table paths with Sigma so the column cache is
   // fresh before we query it. Fires up to 20 syncs concurrently; errors are

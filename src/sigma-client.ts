@@ -119,6 +119,10 @@ export class SigmaClient {
   private clientSecret: string;
   public baseUrl: string;
   private accessToken: string | null = null;
+  // In-process caches — both content and drift validators fetch the same lineage
+  // and spec data; caching here eliminates the duplicate API calls entirely.
+  private _lineageCache = new Map<string, LineageResponse>();
+  private _specCache = new Map<string, DataModelSpec>();
 
   constructor(config: SigmaClientConfig) {
     this.clientId = config.clientId;
@@ -221,7 +225,10 @@ export class SigmaClient {
   }
 
   async getDataModelSpec(id: string): Promise<DataModelSpec> {
-    return this.get<DataModelSpec>(`/v3alpha/datamodels/${id}/spec`);
+    if (this._specCache.has(id)) return this._specCache.get(id)!;
+    const result = await this.get<DataModelSpec>(`/v3alpha/datamodels/${id}/spec`);
+    this._specCache.set(id, result);
+    return result;
   }
 
   async getDataModelColumns(id: string): Promise<DataModelColumn[]> {
@@ -229,9 +236,11 @@ export class SigmaClient {
   }
 
   async getDataModelLineage(id: string): Promise<LineageResponse> {
-    return this.getAllPages<LineageEntry>(`/v2/dataModels/${id}/lineage`).then(
-      (entries) => ({ entries })
-    );
+    if (this._lineageCache.has(id)) return this._lineageCache.get(id)!;
+    const entries = await this.getAllPages<LineageEntry>(`/v2/dataModels/${id}/lineage`);
+    const result: LineageResponse = { entries };
+    this._lineageCache.set(id, result);
+    return result;
   }
 
   async getWorkbookLineage(id: string): Promise<LineageResponse> {
