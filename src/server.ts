@@ -694,11 +694,10 @@ app.post("/api/validate", (req, res) => {
       const modelUrlMap = new Map(models.map((m) => [m.dataModelId, m.url ?? ""]));
 
       addStep("Running content validation (blast radius + dependency graph)…");
+      const contentReport = await runContentValidation(client, models, modelUrlMap);
 
-      const [contentReport, driftReport] = await Promise.all([
-        runContentValidation(client, models, modelUrlMap),
-        runSchemaDriftValidation(client, modelIds, modelUrlMap, addStep),
-      ]);
+      addStep("Running schema drift validation…");
+      const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap, addStep);
 
       addStep("Checking formula references…");
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap, addStep);
