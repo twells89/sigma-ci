@@ -59,7 +59,8 @@ function extractAllColRefs(formula: string): string[] {
 export async function runWorkbookDirectSourceCheck(
   client: SigmaClient,
   workbookUrlMap?: Map<string, string>,
-  onProgress?: (msg: string) => void
+  onProgress?: (msg: string) => void,
+  opts?: { skipSync?: boolean }
 ): Promise<DirectSourceReport> {
   const log = (msg: string) => { if (onProgress) onProgress(msg); else console.error(msg); };
 
@@ -203,8 +204,24 @@ export async function runWorkbookDirectSourceCheck(
     };
   }
 
-  // ── Phase 5: Fetch warehouse table columns (unique inodes only) ───────────
+  // ── Phase 5: Sync warehouse table schemas (unique inodes only) ───────────
   const uniqueInodes = [...new Set(hits.map((h) => h.tableInodeId))];
+
+  if (!opts?.skipSync) {
+    log(`  [direct-source] Syncing ${uniqueInodes.length} warehouse table schema(s)…`);
+    await Promise.all(
+      uniqueInodes.map(async (inodeId) => {
+        try {
+          const info = await client.getInodeConnectionPath(inodeId);
+          if (info) await client.syncConnectionPath(info.connectionId, info.path);
+        } catch (e) {
+          log(`  [direct-source] sync warning for ${inodeId}: ${(e as Error).message}`);
+        }
+      })
+    );
+  }
+
+  // ── Phase 6: Fetch warehouse table columns ────────────────────────────────
   log(`  [direct-source] Fetching ${uniqueInodes.length} warehouse table schema(s)…`);
 
   const warehouseColsByInode = new Map<string, string[]>();
@@ -222,7 +239,7 @@ export async function runWorkbookDirectSourceCheck(
     })
   );
 
-  // ── Phase 6: Build results ────────────────────────────────────────────────
+  // ── Phase 7: Build results ────────────────────────────────────────────────
   const workbookResults = new Map<string, DirectSourceWorkbook>();
 
   for (const h of hits) {

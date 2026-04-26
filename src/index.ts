@@ -163,7 +163,7 @@ program
         : { models: [], generatedAt: new Date().toISOString() };
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
-      const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap);
+      const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       outputResult(
         format,
@@ -222,7 +222,7 @@ program
       const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
-      const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap);
+      const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       // report command defaults to open=true when format is html
       const shouldOpen = opts.open || format === "html";

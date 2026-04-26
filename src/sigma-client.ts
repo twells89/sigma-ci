@@ -300,6 +300,14 @@ export class SigmaClient {
     );
   }
 
+  async getInodeConnectionPath(inodeId: string): Promise<{ connectionId: string; path: string[] } | null> {
+    try {
+      return await this.get<{ connectionId: string; path: string[] }>(`/v2/connections/paths/${inodeId}`);
+    } catch {
+      return null;
+    }
+  }
+
   async syncConnectionPath(connectionId: string, path: string[]): Promise<void> {
     const response = await fetch(
       `${this.baseUrl}/v2/connections/${connectionId}/sync`,
