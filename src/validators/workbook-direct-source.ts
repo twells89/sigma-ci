@@ -34,6 +34,7 @@ export interface DirectSourceWorkbook {
 
 export interface DirectSourceReport {
   workbooks: DirectSourceWorkbook[];
+  totalWorkbooksScanned: number;
   totalDirectElements: number;
   totalCustomSqlElements: number;
   totalMissingColumns: number;
@@ -161,6 +162,7 @@ export async function runWorkbookDirectSourceCheck(
   if (warehouseCandidates.length === 0 && customSqlHits.length === 0) {
     return {
       workbooks: [],
+      totalWorkbooksScanned: workbooks.length,
       totalDirectElements: 0,
       totalCustomSqlElements: 0,
       totalMissingColumns: 0,
@@ -289,7 +291,10 @@ export async function runWorkbookDirectSourceCheck(
         const m = col.formula.match(/^\[([^\]\/]+)\//);
         if (m) elementName = m[1];
       }
-      if (col.formula) {
+      // Only warehouse pass-through columns have inode-prefixed IDs and table-qualified
+      // [TABLE/col] formulas. Calculated columns have bare [col] refs that aren't warehouse
+      // columns — including them produces false drift positives.
+      if (col.columnId.startsWith("inode-") && col.formula) {
         for (const ref of extractAllColRefs(col.formula)) referencedSet.add(ref);
       }
     }
@@ -355,6 +360,7 @@ export async function runWorkbookDirectSourceCheck(
 
   return {
     workbooks: workbookList,
+    totalWorkbooksScanned: workbooks.length,
     totalDirectElements,
     totalCustomSqlElements,
     totalMissingColumns,

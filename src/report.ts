@@ -114,7 +114,7 @@ function mergeReports(
 
 // ── Summary bar ────────────────────────────────────────────────────────────────
 
-function renderSummaryBar(rows: UnifiedModelRow[], directReport: DirectSourceReport | undefined): string {
+function renderSummaryBar(rows: UnifiedModelRow[]): string {
   const totalModels   = rows.length;
   const healthyModels = rows.filter((r) => r.isHealthy).length;
   const issueModels   = totalModels - healthyModels;
@@ -123,9 +123,6 @@ function renderSummaryBar(rows: UnifiedModelRow[], directReport: DirectSourceRep
   );
   const totalMissing  = rows.reduce((s, r) => s + r.totalMissingCols, 0);
   const totalBroken   = rows.reduce((s, r) => s + r.totalBrokenRefs, 0);
-  const directWbCount    = directReport?.workbooks.length ?? 0;
-  const directMissing    = directReport?.totalMissingColumns ?? 0;
-  const customSqlCount   = directReport?.totalCustomSqlElements ?? 0;
 
   const stat = (value: number | string, label: string, cls = "") =>
     `<div class="stat-item ${cls}"><span class="stat-value">${value}</span><span class="stat-label">${escapeHtml(label)}</span></div>`;
@@ -141,10 +138,28 @@ function renderSummaryBar(rows: UnifiedModelRow[], directReport: DirectSourceRep
     ${stat(wbIds.size, "downstream workbooks")}
     ${stat(totalMissing, "missing cols", totalMissing > 0 ? "stat-warn" : "")}
     ${stat(totalBroken, "broken formula refs", totalBroken > 0 ? "stat-warn" : "")}
+  </div>`;
+}
+
+function renderWorkbooksSummaryBar(directReport: DirectSourceReport | undefined): string {
+  if (!directReport) return "";
+
+  const totalScanned   = directReport.totalWorkbooksScanned;
+  const directWbCount  = directReport.workbooks.length;
+  const customSqlCount = directReport.totalCustomSqlElements;
+  const driftCols      = directReport.totalMissingColumns;
+
+  const stat = (value: number | string, label: string, cls = "") =>
+    `<div class="stat-item ${cls}"><span class="stat-value">${value}</span><span class="stat-label">${escapeHtml(label)}</span></div>`;
+  const divider = `<div class="stat-divider"></div>`;
+
+  return `
+  <div class="summary-bar">
+    ${stat(totalScanned, "workbooks scanned")}
     ${divider}
-    ${stat(directWbCount, "direct-source workbooks", directWbCount > 0 ? "stat-warn" : "")}
-    ${customSqlCount > 0 ? stat(customSqlCount, "custom SQL elements", "stat-warn") : ""}
-    ${directMissing > 0 ? stat(directMissing, "direct-source drift", "stat-error") : ""}
+    ${stat(directWbCount, "direct-source workbooks", directWbCount > 0 ? "stat-warn" : "stat-ok")}
+    ${stat(customSqlCount, "custom SQL elements", customSqlCount > 0 ? "stat-warn" : "")}
+    ${stat(driftCols, "warehouse cols dropped", driftCols > 0 ? "stat-error" : "")}
   </div>`;
 }
 
@@ -392,7 +407,7 @@ function renderDirectSourceElement(elem: DirectSourceElement): string {
   }
 
   const driftBadge = elem.missingColumns.length > 0
-    ? `<span class="badge badge-error">${elem.missingColumns.length} col${elem.missingColumns.length !== 1 ? "s" : ""} missing</span>`
+    ? `<span class="badge badge-error">${elem.missingColumns.length} col${elem.missingColumns.length !== 1 ? "s" : ""} dropped from warehouse</span>`
     : elem.actualColumns.length === 0
     ? `<span class="badge badge-warn">Schema not synced</span>`
     : `<span class="badge badge-ok">Clean</span>`;
@@ -416,7 +431,7 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
 
   const govBadge = `<span class="badge badge-warn">Bypasses data model</span>`;
   const sqlBadge = wb.hasCustomSql ? `<span class="badge badge-warn">Custom SQL</span>` : ``;
-  const driftBadge = wb.hasDrift ? `<span class="badge badge-error">Schema drift</span>` : ``;
+  const driftBadge = wb.hasDrift ? `<span class="badge badge-error">Warehouse cols dropped</span>` : ``;
 
   const warehouseElems = wb.elements.filter((e) => e.sourceKind === "warehouse-table");
   const customSqlElems = wb.elements.filter((e) => e.sourceKind === "custom-sql");
@@ -429,7 +444,7 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
           <span class="panel-count panel-count-warn">${warehouseElems.length}</span>
         </div>
         <table class="inner-table">
-          <thead><tr><th>Element</th><th>Warehouse Table</th><th class="th-center">Drift</th><th>Missing Columns</th></tr></thead>
+          <thead><tr><th>Element</th><th>Warehouse Table</th><th class="th-center">Drift</th><th>Columns Dropped from Warehouse</th></tr></thead>
           <tbody>${warehouseElems.map(renderDirectSourceElement).join("\n")}</tbody>
         </table>
       </div>` : ``;
@@ -476,7 +491,7 @@ function renderDirectSourceSection(report: DirectSourceReport | undefined): stri
   return `
   <section>
     <h2>Direct Warehouse Access <span class="section-badge section-badge-warn">${report.workbooks.length} workbook${report.workbooks.length !== 1 ? "s" : ""}</span></h2>
-    <p class="section-desc">These workbooks have elements sourced directly from the warehouse connection, bypassing the data model layer. They should be migrated to use a data model as the source of truth.</p>
+    <p class="section-desc">These workbooks have elements sourced directly from the warehouse, bypassing the data model layer. <strong>Drift</strong> is flagged when the warehouse table has dropped a column the workbook element still references — those columns will error at query time.</p>
     ${cards}
   </section>`;
 }
@@ -685,7 +700,8 @@ export function toHtmlReport(
     </div>
   </div>
   <div class="page-body">
-    ${renderSummaryBar(rows, directSourceReport)}
+    ${renderSummaryBar(rows)}
+    ${renderWorkbooksSummaryBar(directSourceReport)}
     ${renderOverviewTable(rows)}
     ${renderDirectSourceSection(directSourceReport)}
     ${renderDetailSection(rows, nameById, sessionId)}
