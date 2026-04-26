@@ -9,7 +9,7 @@ CI/CD validation and reporting for [Sigma Computing](https://sigmacomputing.com)
 | **Schema drift** | Warehouse columns referenced in a data model that no longer exist |
 | **Content / blast radius** | How many workbooks would break if a model element were removed |
 | **Formula integrity** | Columns with broken or unresolvable formula references |
-| **Workbook direct sources** | Workbook elements sourced directly from warehouse tables (bypassing the data model layer), including any column drift against those tables |
+| **Workbook direct sources** | Workbook elements sourced directly from warehouse tables or Custom SQL (bypassing the data model layer), including column drift against those tables |
 
 ## Setup
 
@@ -155,18 +155,31 @@ jobs:
         "workbookName": "My Workbook",
         "workbookUrl": "https://...",
         "hasDrift": false,
+        "hasCustomSql": true,
         "elements": [
           {
             "elementId": "...",
+            "sourceKind": "warehouse-table",
             "tableName": "ORDERS",
+            "connectionId": "...",
             "referencedColumns": ["ORDER_ID", "AMOUNT"],
             "actualColumns": ["ORDER_ID", "AMOUNT", "STATUS"],
+            "missingColumns": []
+          },
+          {
+            "elementId": "...",
+            "sourceKind": "custom-sql",
+            "connectionId": "...",
+            "sqlDefinition": "select * from MY_SCHEMA.ORDERS",
+            "referencedColumns": [],
+            "actualColumns": [],
             "missingColumns": []
           }
         ]
       }
     ],
     "totalDirectElements": 5,
+    "totalCustomSqlElements": 2,
     "totalMissingColumns": 0
   }
 }
