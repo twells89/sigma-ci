@@ -1,6 +1,7 @@
 import { ContentReport, DownstreamWorkbook } from "./validators/content.js";
 import { DriftReport, DriftTable } from "./validators/schema-drift.js";
 import { FormulaCheckReport, FormulaElementResult } from "./validators/formula-check.js";
+import { DirectSourceReport, DirectSourceWorkbook, DirectSourceElement } from "./validators/workbook-direct-source.js";
 
 export interface CombinedReport {
   generatedAt: string;
@@ -11,11 +12,19 @@ export interface CombinedReport {
 export function toJsonReport(
   contentReport: ContentReport,
   driftReport: DriftReport,
-  formulaReport?: FormulaCheckReport
+  formulaReport?: FormulaCheckReport,
+  directSourceReport?: DirectSourceReport
 ): string {
   return JSON.stringify(
-    { generatedAt: new Date().toISOString(), content: contentReport, schemaDrift: driftReport, formulaCheck: formulaReport },
-    null, 2
+    {
+      generatedAt: new Date().toISOString(),
+      content: contentReport,
+      schemaDrift: driftReport,
+      formulaCheck: formulaReport,
+      directSourceWorkbooks: directSourceReport,
+    },
+    null,
+    2
   );
 }
 
@@ -51,7 +60,7 @@ function renderWorkbookList(wbs: DownstreamWorkbook[]): string {
       const link = wb.url ? externalLink(wb.url, wb.name) : escapeHtml(wb.name);
       return `<li>${link}</li>`;
     }).join("\n");
-    return `<div class="folder-group"><div class="folder-name">📁 ${escapeHtml(folder)}</div><ul>${links}</ul></div>`;
+    return `<div class="folder-group"><div class="folder-name">${escapeHtml(folder)}</div><ul>${links}</ul></div>`;
   }).join("\n");
 }
 
@@ -105,7 +114,7 @@ function mergeReports(
 
 // ── Summary bar ────────────────────────────────────────────────────────────────
 
-function renderSummaryBar(rows: UnifiedModelRow[]): string {
+function renderSummaryBar(rows: UnifiedModelRow[], directReport: DirectSourceReport | undefined): string {
   const totalModels   = rows.length;
   const healthyModels = rows.filter((r) => r.isHealthy).length;
   const issueModels   = totalModels - healthyModels;
@@ -114,20 +123,26 @@ function renderSummaryBar(rows: UnifiedModelRow[]): string {
   );
   const totalMissing  = rows.reduce((s, r) => s + r.totalMissingCols, 0);
   const totalBroken   = rows.reduce((s, r) => s + r.totalBrokenRefs, 0);
+  const directWbCount = directReport?.workbooks.length ?? 0;
+  const directMissing = directReport?.totalMissingColumns ?? 0;
 
   const stat = (value: number | string, label: string, cls = "") =>
     `<div class="stat-item ${cls}"><span class="stat-value">${value}</span><span class="stat-label">${escapeHtml(label)}</span></div>`;
+  const divider = `<div class="stat-divider"></div>`;
 
   return `
   <div class="summary-bar">
     ${stat(totalModels, "models scanned")}
-    <div class="stat-divider"></div>
+    ${divider}
     ${stat(healthyModels, "healthy", healthyModels === totalModels ? "stat-ok" : "")}
     ${stat(issueModels, "with issues", issueModels > 0 ? "stat-error" : "")}
-    <div class="stat-divider"></div>
-    ${stat(wbIds.size, "workbooks downstream")}
+    ${divider}
+    ${stat(wbIds.size, "downstream workbooks")}
     ${stat(totalMissing, "missing cols", totalMissing > 0 ? "stat-warn" : "")}
-    ${stat(totalBroken, "broken refs", totalBroken > 0 ? "stat-warn" : "")}
+    ${stat(totalBroken, "broken formula refs", totalBroken > 0 ? "stat-warn" : "")}
+    ${divider}
+    ${stat(directWbCount, "direct-source workbooks", directWbCount > 0 ? "stat-warn" : "")}
+    ${directMissing > 0 ? stat(directMissing, "direct-source drift", "stat-error") : ""}
   </div>`;
 }
 
@@ -150,11 +165,11 @@ function renderOverviewTable(rows: UnifiedModelRow[]): string {
 
     const driftCell = r.totalMissingCols > 0
       ? `<span class="badge badge-error">${r.totalMissingCols} missing</span>`
-      : `<span class="badge badge-ok">✓ OK</span>`;
+      : `<span class="badge badge-ok">Clean</span>`;
 
     const formulaCell = r.totalBrokenRefs > 0
       ? `<span class="badge badge-error">${r.totalBrokenRefs} broken</span>`
-      : `<span class="badge badge-ok">✓ OK</span>`;
+      : `<span class="badge badge-ok">Clean</span>`;
 
     return `<tr data-model-id="${escapeHtml(r.modelId)}" class="overview-row" title="Jump to details">
       <td class="td-status">${statusDot}</td>
@@ -167,13 +182,13 @@ function renderOverviewTable(rows: UnifiedModelRow[]): string {
 
   return `
   <section>
-    <h2>Model Overview</h2>
+    <h2>Data Models</h2>
     <table class="overview-table">
       <thead>
         <tr>
           <th style="width:28px"></th>
           <th>Model</th>
-          <th class="th-center">Workbooks</th>
+          <th class="th-center">Downstream Workbooks</th>
           <th class="th-center">Schema Drift</th>
           <th class="th-center">Formula Check</th>
         </tr>
@@ -190,7 +205,7 @@ function renderModelDetailCard(
   nameById: Map<string, string>,
   sessionId?: string
 ): string {
-  const cardId     = `model-detail-${row.modelId}`;
+  const cardId      = `model-detail-${row.modelId}`;
   const borderClass = row.isHealthy ? "" : "model-card-error";
 
   const titleHtml = row.modelUrl
@@ -198,8 +213,8 @@ function renderModelDetailCard(
     : `<span class="model-title">${escapeHtml(row.modelName)}</span>`;
 
   const healthBadge = row.isHealthy
-    ? `<span class="badge badge-ok">✓ Healthy</span>`
-    : `<span class="badge badge-error">⚠ Issues found</span>`;
+    ? `<span class="badge badge-ok">Healthy</span>`
+    : `<span class="badge badge-error">Issues found</span>`;
 
   const upstreamHtml = row.upstreamModelIds.length > 0
     ? `<div class="dep-chain">Sources: ${row.upstreamModelIds.map((id) => {
@@ -227,20 +242,20 @@ function renderModelDetailCard(
          data-model-id="${escapeHtml(row.modelId)}"
          data-model-name="${escapeHtml(row.modelName)}"
          data-count="${row.totalMissingCols}"
-       >Fix: Remove ${row.totalMissingCols} missing col${row.totalMissingCols !== 1 ? "s" : ""}</button>`
+       >Remove ${row.totalMissingCols} missing col${row.totalMissingCols !== 1 ? "s" : ""} from spec</button>`
     : "";
 
   const driftRows = row.driftTables.map((t) => {
     const missingHtml = t.missingColumns.length > 0
-      ? t.missingColumns.map((c) => `<span class="missing-col">${escapeHtml(c)}</span>`).join(" ")
+      ? t.missingColumns.map((c) => `<span class="tag tag-error">${escapeHtml(c)}</span>`).join(" ")
       : `<span class="ok-text">none</span>`;
 
     const debugHtml = t.missingColumns.length > 0 ? (() => {
       const refAll = t.referencedColumns.map((c) => `<code>${escapeHtml(c)}</code>`).join(", ");
       const whAll  = t.actualColumns.map((c) => `<code>${escapeHtml(c)}</code>`).join(", ");
-      return `<details class="drift-debug"><summary>🔍 Debug</summary>
+      return `<details class="drift-debug"><summary>Debug</summary>
         <div class="drift-debug-body">
-          <div><strong>Spec extracted (${t.referencedColumns.length}):</strong> ${refAll}</div>
+          <div><strong>Spec references (${t.referencedColumns.length}):</strong> ${refAll}</div>
           <div><strong>Warehouse returned (${t.actualColumns.length}):</strong> ${whAll || "<em>none</em>"}</div>
         </div>
       </details>`;
@@ -257,37 +272,28 @@ function renderModelDetailCard(
   const driftPanel = row.driftTables.length === 0
     ? `<p class="no-elements">No direct warehouse table connections.</p>`
     : `<table class="inner-table">
-        <thead><tr><th>Table</th><th>Referenced</th><th>Warehouse</th><th>Missing Columns</th></tr></thead>
+        <thead><tr><th>Table</th><th class="th-num">Referenced</th><th class="th-num">Warehouse</th><th>Missing Columns</th></tr></thead>
         <tbody>${driftRows}</tbody>
       </table>`;
 
-  // ── Panel 3: Formula Errors ──
+  // ── Panel 3: Formula Check (display only — no fix buttons) ──
   const formulaBlocks = row.formulaElements.map((el) => {
     const colRows = el.brokenColumns.map((col) => {
       const colLabel = col.columnName
         ? `<strong>${escapeHtml(col.columnName)}</strong>`
         : `<code class="model-id">${escapeHtml(col.columnId)}</code>`;
       const typeTag = col.isMetric
-        ? `<span class="formula-type-badge">metric</span>`
-        : `<span class="formula-type-badge formula-type-col">column</span>`;
+        ? `<span class="tag tag-blue">metric</span>`
+        : `<span class="tag tag-purple">column</span>`;
 
       const refBadges = col.brokenRefs.map((r) => {
-        const fixBtnHtml = r.suggestion && sessionId
-          ? `<button class="fix-formula-btn"
-               data-model-id="${escapeHtml(row.modelId)}"
-               data-model-name="${escapeHtml(row.modelName)}"
-               data-element-id="${escapeHtml(el.elementId)}"
-               data-column-id="${escapeHtml(col.columnId)}"
-               data-broken-ref="${escapeHtml(r.ref)}"
-               data-suggestion="${escapeHtml(r.suggestion)}"
-             >→ ${escapeHtml(r.suggestion)}</button>`
-          : r.suggestion
-            ? `<span class="formula-suggestion" title="Re-run with session to enable fix">→ ${escapeHtml(r.suggestion)}</span>`
-            : `<span class="formula-no-suggestion">no suggestion</span>`;
+        const suggestionHtml = r.suggestion
+          ? `<span class="formula-suggestion" title="Similarity: ${(r.similarity * 100).toFixed(0)}%">→ ${escapeHtml(r.suggestion)}</span>`
+          : `<span class="formula-no-suggestion">no suggestion</span>`;
 
         return `<span class="broken-ref-group">
-          <span class="missing-col">[${escapeHtml(r.ref)}]</span>
-          ${fixBtnHtml}
+          <span class="tag tag-error">[${escapeHtml(r.ref)}]</span>
+          ${suggestionHtml}
         </span>`;
       }).join(" ");
 
@@ -299,16 +305,16 @@ function renderModelDetailCard(
     }).join("\n");
 
     return `<div class="formula-element">
-      <div class="formula-element-name">📋 ${escapeHtml(el.elementName ?? el.elementId)}</div>
+      <div class="formula-element-name">${escapeHtml(el.elementName ?? el.elementId)}</div>
       <table class="inner-table">
-        <thead><tr><th>Column / Metric</th><th>Formula</th><th>Broken Refs → Suggestion</th></tr></thead>
+        <thead><tr><th>Column / Metric</th><th>Formula</th><th>Broken Refs</th></tr></thead>
         <tbody>${colRows}</tbody>
       </table>
     </div>`;
   }).join("\n");
 
   const formulaPanel = row.formulaElements.length === 0
-    ? `<p class="no-elements" style="color:#276749">✓ No broken formula references.</p>`
+    ? `<p class="no-elements ok-text">No broken formula references.</p>`
     : formulaBlocks;
 
   return `
@@ -325,7 +331,8 @@ function renderModelDetailCard(
 
       <div class="detail-panel">
         <div class="detail-panel-title">
-          <span class="panel-icon">📊</span> Downstream Workbooks
+          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="5" height="5" rx="1" fill="currentColor" opacity=".7"/><rect x="9" y="2" width="5" height="5" rx="1" fill="currentColor" opacity=".7"/><rect x="2" y="9" width="5" height="5" rx="1" fill="currentColor" opacity=".4"/><rect x="9" y="9" width="5" height="5" rx="1" fill="currentColor" opacity=".4"/></svg>
+          Downstream Workbooks
           ${totalWbs > 0
             ? `<span class="panel-count">${totalWbs}</span>`
             : `<span class="panel-count panel-count-ok">none</span>`}
@@ -335,20 +342,22 @@ function renderModelDetailCard(
 
       <div class="detail-panel">
         <div class="detail-panel-title">
-          <span class="panel-icon">🔍</span> Schema Drift
+          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><path d="M8 2v4M8 10v4M2 8h4M10 8h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="8" cy="8" r="2.5" fill="currentColor" opacity=".7"/></svg>
+          Schema Drift
           ${row.totalMissingCols > 0
             ? `<span class="panel-count panel-count-error">${row.totalMissingCols} missing</span>`
-            : `<span class="panel-count panel-count-ok">✓ clean</span>`}
+            : `<span class="panel-count panel-count-ok">Clean</span>`}
         </div>
         ${driftPanel}
       </div>
 
       <div class="detail-panel">
         <div class="detail-panel-title">
-          <span class="panel-icon">🔧</span> Formula Check
+          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M3 8h7M3 12h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Formula Check
           ${row.totalBrokenRefs > 0
             ? `<span class="panel-count panel-count-error">${row.totalBrokenRefs} broken</span>`
-            : `<span class="panel-count panel-count-ok">✓ clean</span>`}
+            : `<span class="panel-count panel-count-ok">Clean</span>`}
         </div>
         ${formulaPanel}
       </div>
@@ -366,28 +375,101 @@ function renderDetailSection(
   return `<section><h2>Model Details</h2>${cards}</section>`;
 }
 
+// ── Direct-source workbooks section ───────────────────────────────────────────
+
+function renderDirectSourceElement(elem: DirectSourceElement): string {
+  const name = elem.elementName ?? elem.elementId;
+  const driftBadge = elem.missingColumns.length > 0
+    ? `<span class="badge badge-error">${elem.missingColumns.length} col${elem.missingColumns.length !== 1 ? "s" : ""} missing</span>`
+    : elem.actualColumns.length === 0
+    ? `<span class="badge badge-warn">Schema not synced</span>`
+    : `<span class="badge badge-ok">Clean</span>`;
+
+  const missingHtml = elem.missingColumns.length > 0
+    ? elem.missingColumns.map((c) => `<span class="tag tag-error">${escapeHtml(c)}</span>`).join(" ")
+    : "";
+
+  return `<tr>
+    <td><span class="elem-name">${escapeHtml(name)}</span></td>
+    <td><code>${escapeHtml(elem.tableName)}</code></td>
+    <td class="td-center">${driftBadge}</td>
+    <td>${missingHtml}</td>
+  </tr>`;
+}
+
+function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
+  const titleHtml = wb.workbookUrl
+    ? externalLink(wb.workbookUrl, wb.workbookName, "model-title-link")
+    : `<span class="model-title">${escapeHtml(wb.workbookName)}</span>`;
+
+  const govBadge = `<span class="badge badge-warn">Bypasses data model</span>`;
+  const driftBadge = wb.hasDrift
+    ? `<span class="badge badge-error">Schema drift</span>`
+    : ``;
+
+  const rows = wb.elements.map(renderDirectSourceElement).join("\n");
+
+  return `
+  <div class="model-card model-card-warn">
+    <div class="model-header">
+      ${titleHtml}
+      <code class="model-id">${escapeHtml(wb.workbookId)}</code>
+      ${govBadge}
+      ${driftBadge}
+    </div>
+    <div class="detail-panels">
+      <div class="detail-panel">
+        <div class="detail-panel-title">
+          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><path d="M8 2C4.686 2 2 4.686 2 8s2.686 6 6 6 6-2.686 6-6-2.686-6-6-6z" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Direct Warehouse Elements
+          <span class="panel-count panel-count-warn">${wb.elements.length}</span>
+        </div>
+        <table class="inner-table">
+          <thead><tr><th>Element</th><th>Warehouse Table</th><th class="th-center">Drift</th><th>Missing Columns</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderDirectSourceSection(report: DirectSourceReport | undefined): string {
+  if (!report || report.workbooks.length === 0) {
+    return `
+    <section>
+      <h2>Direct Warehouse Access</h2>
+      <p class="empty-state">No workbooks with elements sourced directly from the warehouse. All workbooks route through data models.</p>
+    </section>`;
+  }
+
+  const cards = report.workbooks.map(renderDirectSourceCard).join("\n");
+  return `
+  <section>
+    <h2>Direct Warehouse Access <span class="section-badge section-badge-warn">${report.workbooks.length} workbook${report.workbooks.length !== 1 ? "s" : ""}</span></h2>
+    <p class="section-desc">These workbooks have elements sourced directly from the warehouse connection, bypassing the data model layer. They should be migrated to use a data model as the source of truth.</p>
+    ${cards}
+  </section>`;
+}
+
 // ── Main HTML report ───────────────────────────────────────────────────────────
 
 export function toHtmlReport(
   contentReport: ContentReport,
   driftReport: DriftReport,
-  options?: { sessionId?: string; formulaReport?: FormulaCheckReport }
+  options?: { sessionId?: string; formulaReport?: FormulaCheckReport; directSourceReport?: DirectSourceReport }
 ): string {
-  const generatedAt   = new Date().toISOString();
-  const sessionId     = options?.sessionId;
-  const formulaReport = options?.formulaReport;
+  const generatedAt        = new Date().toISOString();
+  const sessionId          = options?.sessionId;
+  const formulaReport      = options?.formulaReport;
+  const directSourceReport = options?.directSourceReport;
 
   const { rows, nameById } = mergeReports(contentReport, driftReport, formulaReport);
 
   const fixScript = sessionId ? `
     var SESSION_ID = ${JSON.stringify(sessionId)};
 
-    function escapeEl(s) {
-      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }
-
     function fixDrift(modelId, modelName, count) {
-      if (!confirm('Remove ' + count + ' missing column(s) from "' + modelName + '"?\\n\\nThis updates the data model in Sigma. This action cannot be undone.')) return;
+      if (!confirm('Remove ' + count + ' missing column(s) from "' + modelName + '"?\\n\\nThis updates the data model spec in Sigma. Cannot be undone.')) return;
       var card = document.getElementById('model-detail-' + modelId);
       var btn  = card ? card.querySelector('.fix-btn') : null;
       if (btn) { btn.disabled = true; btn.textContent = 'Fixing…'; }
@@ -402,61 +484,24 @@ export function toHtmlReport(
         if (!card) return;
         if (result.success) {
           var panel = card.querySelector('.detail-panel:nth-child(2) .detail-panel-title .panel-count');
-          if (panel) { panel.className = 'panel-count panel-count-ok'; panel.textContent = '✓ fixed'; }
+          if (panel) { panel.className = 'panel-count panel-count-ok'; panel.textContent = 'Fixed'; }
           if (btn) btn.remove();
         } else {
-          if (btn) { btn.disabled = false; btn.textContent = 'Retry fix'; }
+          if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
           alert('Fix failed: ' + (result.error || 'Unknown error'));
         }
       })
       .catch(function(e) {
-        if (btn) { btn.disabled = false; btn.textContent = 'Retry fix'; }
-        alert('Fix failed: ' + e.message);
-      });
-    }
-
-    function fixFormula(btn, modelId, modelName, elementId, columnId, brokenRef, newRef) {
-      if (!confirm('Replace [' + brokenRef + '] with [' + newRef + '] in "' + modelName + '"?')) return;
-      btn.disabled = true;
-      btn.textContent = 'Fixing…';
-
-      fetch('/api/fix-formula', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionId: SESSION_ID, modelId: modelId, elementId: elementId, columnId: columnId, brokenRef: brokenRef, newRef: newRef }),
-      })
-      .then(function(r) { return r.json(); })
-      .then(function(result) {
-        if (result.success) {
-          var group = btn.closest('.broken-ref-group');
-          if (group) {
-            group.innerHTML = '<span class="badge-ok" style="border-radius:4px;padding:1px 8px;font-size:0.78rem;">✓ [' + escapeEl(newRef) + ']</span>';
-          }
-        } else {
-          btn.disabled = false;
-          btn.textContent = '→ ' + escapeEl(newRef);
-          alert('Fix failed: ' + (result.error || 'Unknown error'));
-        }
-      })
-      .catch(function(e) {
-        btn.disabled = false;
-        btn.textContent = '→ ' + escapeEl(newRef);
+        if (btn) { btn.disabled = false; btn.textContent = 'Retry'; }
         alert('Fix failed: ' + e.message);
       });
     }
 
     document.addEventListener('click', function(e) {
-      var fBtn = e.target.closest('.fix-formula-btn');
-      if (fBtn) {
-        e.stopPropagation();
-        fixFormula(fBtn, fBtn.dataset.modelId, fBtn.dataset.modelName, fBtn.dataset.elementId, fBtn.dataset.columnId, fBtn.dataset.brokenRef, fBtn.dataset.suggestion);
-        return;
-      }
       var dBtn = e.target.closest('.fix-btn');
       if (dBtn) {
         e.stopPropagation();
         fixDrift(dBtn.dataset.modelId, dBtn.dataset.modelName, parseInt(dBtn.dataset.count, 10));
-        return;
       }
     });
   ` : "";
@@ -469,171 +514,172 @@ export function toHtmlReport(
   <title>Sigma Sentinel Report</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f7fa; color: #1a202c; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif; background: #f4f6f9; color: #111827; margin: 0; padding: 0; font-size: 14px; line-height: 1.5; }
 
     /* ── Page shell ── */
-    .page-header { background: linear-gradient(135deg, #0c0c1e 0%, #1a0f40 55%, #2d1b6b 100%); color: white; padding: 28px 40px 24px; position: relative; overflow: hidden; }
-    .page-header::before { content: ''; position: absolute; width: 280px; height: 280px; background: radial-gradient(circle, rgba(139,92,246,0.15) 0%, transparent 65%); top: -80px; right: -60px; pointer-events: none; }
-    .page-header h1 { font-size: 1.6rem; margin: 0 0 4px; display: flex; align-items: center; gap: 12px; position: relative; }
-    .header-logo { display: flex; align-items: center; flex-shrink: 0; }
-    .page-header .subtitle { color: rgba(255,255,255,0.6); font-size: 0.86rem; margin: 0; position: relative; }
-    .page-body { max-width: 1200px; margin: 0 auto; padding: 32px 40px 60px; }
+    .page-header { background: #0f172a; color: white; padding: 24px 40px 22px; display: flex; align-items: center; gap: 14px; }
+    .header-logo svg { display: block; }
+    .header-text h1 { font-size: 1.2rem; font-weight: 700; margin: 0 0 2px; letter-spacing: -0.01em; }
+    .header-text p { color: rgba(255,255,255,0.45); font-size: 0.78rem; margin: 0; }
+    .page-body { max-width: 1180px; margin: 0 auto; padding: 28px 36px 60px; }
 
-    /* ── Typography / sections ── */
-    section { margin-bottom: 40px; }
-    h2 { font-size: 1.1rem; font-weight: 700; color: #2d3748; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.04em; }
+    /* ── Sections ── */
+    section { margin-bottom: 36px; }
+    h2 { font-size: 0.72rem; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.08em; border-bottom: 1px solid #e5e7eb; padding-bottom: 8px; margin-bottom: 16px; display: flex; align-items: center; gap: 10px; }
+    .section-badge { font-size: 0.68rem; font-weight: 700; border-radius: 9999px; padding: 2px 9px; text-transform: none; letter-spacing: 0; }
+    .section-badge-warn { background: #fef3c7; color: #92400e; }
+    .section-desc { color: #6b7280; font-size: 0.82rem; margin: -8px 0 16px; line-height: 1.6; }
+    .empty-state { color: #9ca3af; font-size: 0.85rem; padding: 20px 0; }
 
     /* ── Summary bar ── */
-    .summary-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0; background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 32px; overflow: hidden; }
-    .stat-item   { display: flex; flex-direction: column; align-items: center; padding: 18px 24px; flex: 1; min-width: 100px; }
-    .stat-value  { font-size: 2rem; font-weight: 800; color: #1a202c; line-height: 1; }
-    .stat-label  { font-size: 0.7rem; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 5px; text-align: center; }
-    .stat-ok   .stat-value { color: #38a169; }
-    .stat-error .stat-value { color: #e53e3e; }
-    .stat-warn  .stat-value { color: #dd6b20; }
-    .stat-divider { width: 1px; background: #e2e8f0; align-self: stretch; margin: 12px 0; }
+    .summary-bar { display: flex; flex-wrap: wrap; align-items: stretch; background: #fff; border-radius: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.05); margin-bottom: 28px; overflow: hidden; }
+    .stat-item   { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px 20px; flex: 1; min-width: 90px; }
+    .stat-value  { font-size: 1.8rem; font-weight: 800; color: #111827; line-height: 1; letter-spacing: -0.02em; }
+    .stat-label  { font-size: 0.65rem; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.06em; margin-top: 4px; text-align: center; }
+    .stat-ok   .stat-value { color: #16a34a; }
+    .stat-error .stat-value { color: #dc2626; }
+    .stat-warn  .stat-value { color: #d97706; }
+    .stat-divider { width: 1px; background: #f3f4f6; align-self: stretch; margin: 12px 0; }
 
     /* ── Overview table ── */
-    .overview-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
-    .overview-table th { background: #2d3748; color: rgba(255,255,255,0.85); text-align: left; padding: 10px 16px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; }
-    .overview-table td { padding: 11px 16px; border-top: 1px solid #e2e8f0; vertical-align: middle; }
+    .overview-table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.05); }
+    .overview-table th { background: #f9fafb; color: #374151; text-align: left; padding: 9px 16px; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.07em; border-bottom: 1px solid #e5e7eb; font-weight: 600; }
+    .overview-table td { padding: 10px 16px; border-top: 1px solid #f3f4f6; vertical-align: middle; }
     .overview-row { cursor: pointer; transition: background 0.1s; }
-    .overview-row:hover td { background: #f0f4ff; }
-    .td-status  { width: 32px; padding-right: 0; }
+    .overview-row:hover td { background: #f9fafb; }
+    .td-status  { width: 28px; padding-right: 0; }
     .td-center  { text-align: center; }
-    .th-center  { text-align: center; }
-    .status-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
-    .dot-ok     { background: #48bb78; box-shadow: 0 0 0 3px #c6f6d5; }
-    .dot-error  { background: #fc8181; box-shadow: 0 0 0 3px #fed7d7; }
-    .ov-count   { font-weight: 600; color: #2b6cb0; }
-    .ov-zero    { color: #cbd5e0; }
+    .th-center  { text-align: center !important; }
+    .th-num     { text-align: right !important; width: 90px; }
+    .status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+    .dot-ok     { background: #22c55e; box-shadow: 0 0 0 3px #dcfce7; }
+    .dot-error  { background: #ef4444; box-shadow: 0 0 0 3px #fee2e2; }
+    .ov-count   { font-weight: 600; color: #1d4ed8; }
+    .ov-zero    { color: #d1d5db; }
 
     /* ── Model cards ── */
-    .model-card { background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); margin-bottom: 20px; overflow: hidden; border-left: 4px solid #e2e8f0; }
-    .model-card-error { border-left-color: #fc8181; }
-    .model-header { display: flex; align-items: center; gap: 12px; padding: 16px 20px; background: #f7fafc; border-bottom: 1px solid #e2e8f0; flex-wrap: wrap; }
-    .model-title  { font-weight: 700; font-size: 1rem; }
-    .model-id     { color: #718096; font-size: 0.78rem; font-family: "SFMono-Regular", Consolas, monospace; }
-    .model-title-link { font-weight: 700; font-size: 1rem; }
-    .model-name-plain { font-weight: 700; font-size: 1rem; }
+    .model-card { background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 0 0 1px rgba(0,0,0,0.05); margin-bottom: 16px; overflow: hidden; border-left: 3px solid #e5e7eb; }
+    .model-card-error { border-left-color: #ef4444; }
+    .model-card-warn  { border-left-color: #f59e0b; }
+    .model-header { display: flex; align-items: center; gap: 10px; padding: 14px 18px; background: #fafafa; border-bottom: 1px solid #f3f4f6; flex-wrap: wrap; }
+    .model-title  { font-weight: 700; font-size: 0.95rem; color: #111827; }
+    .model-id     { color: #9ca3af; font-size: 0.72rem; font-family: "SFMono-Regular", Consolas, monospace; }
+    .model-title-link { font-weight: 700; font-size: 0.95rem; }
+    .model-name-plain { font-weight: 700; font-size: 0.95rem; color: #111827; }
 
-    /* ── Badges ── */
-    .badge        { border-radius: 9999px; padding: 3px 10px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; display: inline-block; }
-    .badge-ok     { background: #c6f6d5; color: #22543d; }
-    .badge-error  { background: #fed7d7; color: #742a2a; }
-    .badge-ml     { margin-left: auto; }
+    /* ── Badges & tags ── */
+    .badge        { border-radius: 9999px; padding: 3px 10px; font-size: 0.7rem; font-weight: 600; white-space: nowrap; display: inline-block; }
+    .badge-ok     { background: #dcfce7; color: #166534; }
+    .badge-error  { background: #fee2e2; color: #991b1b; }
+    .badge-warn   { background: #fef3c7; color: #92400e; }
+    .tag          { display: inline-block; border-radius: 4px; padding: 1px 6px; font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.75rem; margin: 1px 2px; }
+    .tag-error    { background: #fee2e2; color: #991b1b; }
+    .tag-blue     { background: #dbeafe; color: #1e40af; font-family: inherit; font-size: 0.7rem; }
+    .tag-purple   { background: #ede9fe; color: #5b21b6; font-family: inherit; font-size: 0.7rem; }
 
-    /* ── Fix buttons ── */
-    .fix-btn { background: #fff; color: #9b2c2c; border: 1px solid #fc8181; border-radius: 6px; padding: 5px 14px; cursor: pointer; font-size: 0.8rem; font-weight: 600; margin-left: auto; white-space: nowrap; transition: background 0.15s; }
-    .fix-btn:hover:not(:disabled) { background: #fff5f5; }
-    .fix-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-    .fix-formula-btn { background: #f0fff4; color: #276749; border: 1px solid #9ae6b4; border-radius: 4px; padding: 2px 10px; cursor: pointer; font-size: 0.78rem; font-weight: 600; white-space: nowrap; }
-    .fix-formula-btn:hover:not(:disabled) { background: #c6f6d5; }
-    .fix-formula-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    /* ── Fix button (schema drift only) ── */
+    .fix-btn { background: #fff; color: #991b1b; border: 1px solid #fca5a5; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 0.75rem; font-weight: 600; margin-left: auto; white-space: nowrap; transition: background 0.15s; }
+    .fix-btn:hover:not(:disabled) { background: #fef2f2; }
+    .fix-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    /* ── Detail panels inside each model card ── */
-    .detail-panels { }
-    .detail-panel  { border-top: 1px solid #e2e8f0; }
-    .detail-panel-title { display: flex; align-items: center; gap: 8px; padding: 10px 20px; font-size: 0.83rem; font-weight: 600; color: #4a5568; background: #fbfcfd; border-bottom: 1px solid #f0f0f0; }
-    .panel-icon    { font-size: 0.95rem; }
-    .panel-count   { margin-left: auto; font-size: 0.75rem; font-weight: 600; background: #edf2f7; color: #4a5568; border-radius: 9999px; padding: 2px 9px; }
-    .panel-count-ok    { background: #c6f6d5; color: #22543d; }
-    .panel-count-error { background: #fed7d7; color: #742a2a; }
+    /* ── Detail panels ── */
+    .detail-panel  { border-top: 1px solid #f3f4f6; }
+    .detail-panel-title { display: flex; align-items: center; gap: 7px; padding: 9px 18px; font-size: 0.75rem; font-weight: 600; color: #374151; background: #fafafa; border-bottom: 1px solid #f3f4f6; }
+    .panel-svg     { width: 14px; height: 14px; color: #9ca3af; flex-shrink: 0; }
+    .panel-count   { margin-left: auto; font-size: 0.7rem; font-weight: 600; background: #f3f4f6; color: #6b7280; border-radius: 9999px; padding: 1px 8px; }
+    .panel-count-ok    { background: #dcfce7; color: #166534; }
+    .panel-count-error { background: #fee2e2; color: #991b1b; }
+    .panel-count-warn  { background: #fef3c7; color: #92400e; }
 
     /* ── Tables ── */
     table { width: 100%; border-collapse: collapse; }
-    th    { background: #edf2f7; text-align: left; padding: 8px 14px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #4a5568; }
-    td    { padding: 9px 14px; border-top: 1px solid #e2e8f0; vertical-align: top; }
-    tr:hover td { background: #fafafa; }
-    .inner-table  { width: 100%; border-collapse: collapse; }
-    .inner-table th { background: #f7fafc; font-size: 0.72rem; padding: 7px 14px; }
-    .inner-table td { padding: 8px 14px; border-top: 1px solid #edf2f7; }
-    .count-small  { color: #718096; font-size: 0.85rem; text-align: right; }
+    th    { background: #f9fafb; text-align: left; padding: 8px 14px; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; border-bottom: 1px solid #e5e7eb; font-weight: 600; }
+    td    { padding: 8px 14px; border-top: 1px solid #f3f4f6; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    .inner-table th { background: #fafafa; font-size: 0.65rem; padding: 6px 14px; border-bottom: 1px solid #f0f0f0; }
+    .inner-table td { padding: 7px 14px; border-top: 1px solid #f5f5f5; }
+    .count-small  { color: #9ca3af; font-size: 0.82rem; text-align: right; }
 
     /* ── Workbook lists ── */
-    .detail-sub-panel { padding: 12px 20px 16px; }
-    .wb-section-label { font-size: 0.74rem; font-weight: 700; color: #4a5568; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 0 3px; }
+    .detail-sub-panel { padding: 12px 18px 14px; }
+    .wb-section-label { font-size: 0.68rem; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 0.06em; padding: 4px 0 3px; }
     .wb-section-transitive { color: #92400e; margin-top: 10px; }
-    .folder-group { margin-bottom: 12px; }
-    .folder-name  { font-weight: 600; color: #4a5568; margin-bottom: 4px; font-size: 0.88rem; }
-    .folder-group ul { margin: 0; padding-left: 20px; }
-    .folder-group li { margin: 4px 0; font-size: 0.88rem; }
+    .folder-group { margin-bottom: 10px; }
+    .folder-name  { font-weight: 600; color: #374151; margin-bottom: 3px; font-size: 0.82rem; }
+    .folder-group ul { margin: 0; padding-left: 16px; }
+    .folder-group li { margin: 3px 0; font-size: 0.82rem; color: #374151; }
 
     /* ── Column / formula display ── */
-    .missing-col    { display: inline-block; background: #fed7d7; color: #742a2a; border-radius: 4px; padding: 1px 6px; font-family: monospace; font-size: 0.82rem; margin: 1px 2px; }
-    .ok-text        { color: #38a169; font-size: 0.85rem; }
-    .no-elements    { color: #718096; padding: 12px 20px; margin: 0; font-size: 0.88rem; }
-    .formula-element { padding: 12px 20px 4px; border-top: 1px solid #edf2f7; }
-    .formula-element-name { font-weight: 600; font-size: 0.88rem; color: #4a5568; margin-bottom: 8px; }
-    .formula-code   { background: #f7fafc; border: 1px solid #e2e8f0; border-radius: 4px; padding: 2px 6px; font-size: 0.78rem; word-break: break-all; font-family: "SFMono-Regular", Consolas, monospace; }
-    .formula-type-badge { background: #bee3f8; color: #2b6cb0; border-radius: 4px; padding: 1px 6px; font-size: 0.7rem; font-weight: 600; margin-left: 4px; }
-    .formula-type-col   { background: #e9d8fd; color: #553c9a; }
+    .ok-text        { color: #16a34a; font-size: 0.82rem; }
+    .no-elements    { color: #9ca3af; padding: 12px 18px; margin: 0; font-size: 0.82rem; }
+    .formula-element { padding: 10px 18px 4px; border-top: 1px solid #f3f4f6; }
+    .formula-element-name { font-weight: 600; font-size: 0.82rem; color: #374151; margin-bottom: 6px; }
+    .formula-code   { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 4px; padding: 2px 5px; font-size: 0.73rem; word-break: break-all; font-family: "SFMono-Regular", Consolas, monospace; color: #1f2937; }
     .broken-ref-group   { display: inline-flex; align-items: center; gap: 4px; margin: 2px; }
-    .formula-suggestion { color: #276749; font-size: 0.78rem; font-style: italic; }
-    .formula-no-suggestion { color: #a0aec0; font-size: 0.78rem; font-style: italic; }
+    .formula-suggestion { color: #166534; font-size: 0.73rem; background: #dcfce7; border-radius: 3px; padding: 1px 5px; }
+    .formula-no-suggestion { color: #9ca3af; font-size: 0.73rem; font-style: italic; }
+
+    /* ── Direct source ── */
+    .elem-name { font-weight: 500; color: #111827; }
 
     /* ── Dep chain ── */
-    .dep-chain  { font-size: 0.74rem; color: #718096; }
-    .dep-badge  { background: #e9d8fd; color: #553c9a; border-radius: 4px; padding: 1px 6px; font-size: 0.74rem; }
+    .dep-chain  { font-size: 0.7rem; color: #6b7280; }
+    .dep-badge  { background: #ede9fe; color: #5b21b6; border-radius: 4px; padding: 1px 6px; font-size: 0.7rem; }
 
     /* ── Debug details ── */
-    .drift-debug summary { cursor: pointer; color: #4a5568; font-size: 0.78rem; font-weight: 500; margin-top: 4px; }
-    .drift-debug-body { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; background: #f7fafc; border-radius: 4px; padding: 8px; font-size: 0.75rem; color: #718096; }
+    .drift-debug summary { cursor: pointer; color: #6b7280; font-size: 0.73rem; margin-top: 3px; user-select: none; }
+    .drift-debug-body { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; background: #f9fafb; border-radius: 4px; padding: 7px 10px; font-size: 0.72rem; color: #6b7280; }
 
     /* ── Links ── */
-    .ext-link { color: #2b6cb0; text-decoration: underline; text-decoration-color: rgba(43,108,176,0.4); text-underline-offset: 2px; display: inline-flex; align-items: center; gap: 3px; font-weight: 500; }
-    .ext-link:hover { color: #1a56db; text-decoration-color: #1a56db; }
-    .ext-icon { width: 10px; height: 10px; flex-shrink: 0; opacity: 0.75; }
+    .ext-link { color: #1d4ed8; text-decoration: none; display: inline-flex; align-items: center; gap: 3px; font-weight: 500; }
+    .ext-link:hover { text-decoration: underline; }
+    .ext-icon { width: 9px; height: 9px; flex-shrink: 0; opacity: 0.6; }
 
     code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.85em; }
   </style>
 </head>
 <body>
   <div class="page-header">
-    <h1>
-      <span class="header-logo">
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 35" width="32" height="37" fill="none">
-          <path d="M15 1.5 L27 6 L27 20 C27 28 21 33 15 35 C9 33 3 28 3 20 L3 6 Z"
-                fill="rgba(255,255,255,0.17)" stroke="rgba(255,255,255,0.42)" stroke-width="1.2" stroke-linejoin="round"/>
-          <text x="15" y="22.5" text-anchor="middle" fill="white" font-size="14" font-weight="800"
-                font-family="Georgia,'Times New Roman',serif">&#x3A3;</text>
-        </svg>
-      </span>
-      Sigma Sentinel Report
-    </h1>
-    <p class="subtitle">Generated ${escapeHtml(generatedAt)}</p>
+    <div class="header-logo">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 30 35" width="28" height="33" fill="none">
+        <path d="M15 1.5 L27 6 L27 20 C27 28 21 33 15 35 C9 33 3 28 3 20 L3 6 Z"
+              fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.35)" stroke-width="1.2" stroke-linejoin="round"/>
+        <text x="15" y="23" text-anchor="middle" fill="white" font-size="14" font-weight="800"
+              font-family="Georgia,'Times New Roman',serif">&#x3A3;</text>
+      </svg>
+    </div>
+    <div class="header-text">
+      <h1>Sigma Sentinel</h1>
+      <p>Generated ${escapeHtml(generatedAt)}</p>
+    </div>
   </div>
   <div class="page-body">
-    ${renderSummaryBar(rows)}
+    ${renderSummaryBar(rows, directSourceReport)}
     ${renderOverviewTable(rows)}
+    ${renderDirectSourceSection(directSourceReport)}
     ${renderDetailSection(rows, nameById, sessionId)}
   </div>
   <script>
-    function scrollToModel(modelId) {
-      var el = document.getElementById('model-detail-' + modelId);
-      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
-
     document.addEventListener('click', function(e) {
       var row = e.target.closest('.overview-row');
       if (row && !e.target.closest('a') && !e.target.closest('button')) {
-        scrollToModel(row.dataset.modelId);
+        var el = document.getElementById('model-detail-' + row.dataset.modelId);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     });
-
     ${fixScript}
   </script>
 </body>
 </html>`;
 }
 
-// ── Plain text report (unchanged) ─────────────────────────────────────────────
+// ── Plain text report ─────────────────────────────────────────────────────────
 
 export function toTextReport(contentReport: ContentReport, driftReport: DriftReport): string {
   const lines: string[] = [];
   const sep = "─".repeat(60);
 
-  lines.push("SIGMA CI REPORT");
+  lines.push("SIGMA SENTINEL REPORT");
   lines.push(`Generated: ${new Date().toISOString()}`);
   lines.push(sep);
   lines.push("");
@@ -651,7 +697,7 @@ export function toTextReport(contentReport: ContentReport, driftReport: DriftRep
     if (directCount > 0) {
       const byFolder = groupByFolder(model.downstreamWorkbooks);
       for (const [folder, wbs] of byFolder.entries()) {
-        lines.push(`    📁 ${folder}`);
+        lines.push(`    ${folder}`);
         for (const wb of wbs) {
           lines.push(`      • ${wb.name}`);
           if (wb.url) lines.push(`        ${wb.url}`);

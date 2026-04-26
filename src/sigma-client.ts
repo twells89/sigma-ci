@@ -99,6 +99,20 @@ export interface TableColumn {
   [key: string]: unknown;
 }
 
+export interface WorkbookElement {
+  elementId: string;
+  type: string;
+  name?: string;
+  columns?: string[];
+}
+
+export interface WorkbookElementColumn {
+  columnId: string;
+  label: string;
+  formula?: string;
+  type?: unknown;
+}
+
 /** Entry from GET /v2/dataModels/{id}/columns */
 export interface DataModelColumn {
   elementId: string;
@@ -267,6 +281,16 @@ export class SigmaClient {
   async getWorkbookLineage(id: string): Promise<LineageResponse> {
     return this.getAllPages<LineageEntry>(`/v2/workbooks/${id}/lineage`).then(
       (entries) => ({ entries })
+    );
+  }
+
+  async getWorkbookElements(workbookId: string): Promise<WorkbookElement[]> {
+    return this.getAllPages<WorkbookElement>(`/v2/workbooks/${workbookId}/elements`);
+  }
+
+  async getWorkbookElementColumns(workbookId: string, elementId: string): Promise<WorkbookElementColumn[]> {
+    return this.getAllPages<WorkbookElementColumn>(
+      `/v2/workbooks/${workbookId}/elements/${encodeURIComponent(elementId)}/columns`
     );
   }
 
