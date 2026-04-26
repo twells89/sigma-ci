@@ -123,8 +123,9 @@ function renderSummaryBar(rows: UnifiedModelRow[], directReport: DirectSourceRep
   );
   const totalMissing  = rows.reduce((s, r) => s + r.totalMissingCols, 0);
   const totalBroken   = rows.reduce((s, r) => s + r.totalBrokenRefs, 0);
-  const directWbCount = directReport?.workbooks.length ?? 0;
-  const directMissing = directReport?.totalMissingColumns ?? 0;
+  const directWbCount    = directReport?.workbooks.length ?? 0;
+  const directMissing    = directReport?.totalMissingColumns ?? 0;
+  const customSqlCount   = directReport?.totalCustomSqlElements ?? 0;
 
   const stat = (value: number | string, label: string, cls = "") =>
     `<div class="stat-item ${cls}"><span class="stat-value">${value}</span><span class="stat-label">${escapeHtml(label)}</span></div>`;
@@ -142,6 +143,7 @@ function renderSummaryBar(rows: UnifiedModelRow[], directReport: DirectSourceRep
     ${stat(totalBroken, "broken formula refs", totalBroken > 0 ? "stat-warn" : "")}
     ${divider}
     ${stat(directWbCount, "direct-source workbooks", directWbCount > 0 ? "stat-warn" : "")}
+    ${customSqlCount > 0 ? stat(customSqlCount, "custom SQL elements", "stat-warn") : ""}
     ${directMissing > 0 ? stat(directMissing, "direct-source drift", "stat-error") : ""}
   </div>`;
 }
@@ -379,6 +381,16 @@ function renderDetailSection(
 
 function renderDirectSourceElement(elem: DirectSourceElement): string {
   const name = elem.elementName ?? elem.elementId;
+
+  if (elem.sourceKind === "custom-sql") {
+    const sql = elem.sqlDefinition ?? "";
+    const truncated = sql.length > 120 ? sql.slice(0, 120) + "…" : sql;
+    return `<tr>
+      <td><span class="elem-name">${escapeHtml(name)}</span></td>
+      <td colspan="3"><code class="sql-preview">${escapeHtml(truncated)}</code></td>
+    </tr>`;
+  }
+
   const driftBadge = elem.missingColumns.length > 0
     ? `<span class="badge badge-error">${elem.missingColumns.length} col${elem.missingColumns.length !== 1 ? "s" : ""} missing</span>`
     : elem.actualColumns.length === 0
@@ -403,11 +415,37 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
     : `<span class="model-title">${escapeHtml(wb.workbookName)}</span>`;
 
   const govBadge = `<span class="badge badge-warn">Bypasses data model</span>`;
-  const driftBadge = wb.hasDrift
-    ? `<span class="badge badge-error">Schema drift</span>`
-    : ``;
+  const sqlBadge = wb.hasCustomSql ? `<span class="badge badge-warn">Custom SQL</span>` : ``;
+  const driftBadge = wb.hasDrift ? `<span class="badge badge-error">Schema drift</span>` : ``;
 
-  const rows = wb.elements.map(renderDirectSourceElement).join("\n");
+  const warehouseElems = wb.elements.filter((e) => e.sourceKind === "warehouse-table");
+  const customSqlElems = wb.elements.filter((e) => e.sourceKind === "custom-sql");
+
+  const warehousePanel = warehouseElems.length > 0 ? `
+      <div class="detail-panel">
+        <div class="detail-panel-title">
+          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><path d="M8 2C4.686 2 2 4.686 2 8s2.686 6 6 6 6-2.686 6-6-2.686-6-6-6z" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+          Direct Warehouse Elements
+          <span class="panel-count panel-count-warn">${warehouseElems.length}</span>
+        </div>
+        <table class="inner-table">
+          <thead><tr><th>Element</th><th>Warehouse Table</th><th class="th-center">Drift</th><th>Missing Columns</th></tr></thead>
+          <tbody>${warehouseElems.map(renderDirectSourceElement).join("\n")}</tbody>
+        </table>
+      </div>` : ``;
+
+  const sqlPanel = customSqlElems.length > 0 ? `
+      <div class="detail-panel">
+        <div class="detail-panel-title">
+          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M3 8h7M3 12h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Custom SQL Elements
+          <span class="panel-count panel-count-warn">${customSqlElems.length}</span>
+        </div>
+        <table class="inner-table">
+          <thead><tr><th>Element</th><th colspan="3">SQL Definition</th></tr></thead>
+          <tbody>${customSqlElems.map(renderDirectSourceElement).join("\n")}</tbody>
+        </table>
+      </div>` : ``;
 
   return `
   <div class="model-card model-card-warn">
@@ -415,20 +453,12 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
       ${titleHtml}
       <code class="model-id">${escapeHtml(wb.workbookId)}</code>
       ${govBadge}
+      ${sqlBadge}
       ${driftBadge}
     </div>
     <div class="detail-panels">
-      <div class="detail-panel">
-        <div class="detail-panel-title">
-          <svg class="panel-svg" viewBox="0 0 16 16" fill="none"><path d="M8 2C4.686 2 2 4.686 2 8s2.686 6 6 6 6-2.686 6-6-2.686-6-6-6z" stroke="currentColor" stroke-width="1.5"/><path d="M8 7v4M8 5.5v.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          Direct Warehouse Elements
-          <span class="panel-count panel-count-warn">${wb.elements.length}</span>
-        </div>
-        <table class="inner-table">
-          <thead><tr><th>Element</th><th>Warehouse Table</th><th class="th-center">Drift</th><th>Missing Columns</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      </div>
+      ${warehousePanel}
+      ${sqlPanel}
     </div>
   </div>`;
 }
@@ -621,6 +651,7 @@ export function toHtmlReport(
 
     /* ── Direct source ── */
     .elem-name { font-weight: 500; color: #111827; }
+    .sql-preview { font-size: 0.72rem; color: #374151; white-space: pre-wrap; word-break: break-all; }
 
     /* ── Dep chain ── */
     .dep-chain  { font-size: 0.7rem; color: #6b7280; }

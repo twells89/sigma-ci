@@ -68,11 +68,12 @@ export interface SpecMetric {
 export interface LineageEntry {
   connectionId?: string;
   name?: string;
-  type: string;            // "table" | "element"
+  type: string;            // "table" | "element" | "customSQL"
   inodeId?: string;        // for type:"table" — use as tableId for columns API
   elementId?: string;      // for type:"element"
   sourceIds?: string[];
   dataSourceIds?: string[];// inode prefixes — used to match workbooks to data models
+  definition?: string;     // for type:"customSQL" — the SQL statement
 }
 
 export interface LineageResponse {
