@@ -9,6 +9,7 @@ import { SigmaClient, DataModel } from "./sigma-client.js";
 import { runContentValidation } from "./validators/content.js";
 import { runSchemaDriftValidation } from "./validators/schema-drift.js";
 import { runFormulaCheck } from "./validators/formula-check.js";
+import { runWorkbookDirectSourceCheck } from "./validators/workbook-direct-source.js";
 import {
   toJsonReport,
   toHtmlReport,
@@ -162,12 +163,13 @@ program
         : { models: [], generatedAt: new Date().toISOString() };
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
+      const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap);
 
       outputResult(
         format,
         opts.open,
-        toHtmlReport(contentReport, driftReport, { formulaReport }),
-        toJsonReport(contentReport, driftReport, formulaReport),
+        toHtmlReport(contentReport, driftReport, { formulaReport, directSourceReport }),
+        toJsonReport(contentReport, driftReport, formulaReport, directSourceReport),
         toTextReport(contentReport, driftReport)
       );
     }
@@ -220,6 +222,7 @@ program
       const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
+      const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap);
 
       // report command defaults to open=true when format is html
       const shouldOpen = opts.open || format === "html";
@@ -227,8 +230,8 @@ program
       outputResult(
         format,
         shouldOpen,
-        toHtmlReport(contentReport, driftReport, { formulaReport }),
-        toJsonReport(contentReport, driftReport, formulaReport),
+        toHtmlReport(contentReport, driftReport, { formulaReport, directSourceReport }),
+        toJsonReport(contentReport, driftReport, formulaReport, directSourceReport),
         toTextReport(contentReport, driftReport)
       );
     }
