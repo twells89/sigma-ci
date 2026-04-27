@@ -154,9 +154,9 @@ export class SigmaClient {
   private _lineageCache = new Map<string, LineageResponse>();
   private _specCache = new Map<string, DataModelSpec>();
   // Global concurrency semaphore — all validators share one SigmaClient.
-  // /sources handles 10+ concurrent fine; DM lineage is capped at 3 by
-  // runConcurrent() regardless of this value.
-  private _slots = 10;
+  // AWS cluster rate-limits /sources at ~5 concurrent; DM lineage is
+  // further capped at 3 by per-phase runConcurrent() calls.
+  private _slots = 5;
   private _waiting: Array<() => void> = [];
 
   private async _throttle<T>(fn: () => Promise<T>): Promise<T> {
@@ -226,9 +226,12 @@ export class SigmaClient {
       // Retry on rate-limit (429/430) and transient server errors (502/503/504)
       if (response.status === 429 || response.status === 430 || response.status === 502 || response.status === 503 || response.status === 504) {
         const retryAfterSec = parseInt(response.headers.get("Retry-After") ?? "0", 10);
+        // Full jitter: uniform random within [0, cap] to prevent thundering-herd
+        // re-bursts when many slots hit 429 simultaneously.
+        const cap = Math.min(1000 * Math.pow(2, attempt), 30_000);
         const delayMs = retryAfterSec > 0
-          ? retryAfterSec * 1000
-          : Math.min(1000 * Math.pow(2, attempt), 30_000); // 1s, 2s, 4s … up to 30s
+          ? retryAfterSec * 1000 + Math.random() * 500
+          : Math.floor(Math.random() * cap) + 200; // at least 200ms
         const label = response.status === 429 || response.status === 430 ? "rate-limit" : "transient";
         console.error(`  [${label}] ${response.status} on ${path} — waiting ${delayMs}ms (attempt ${attempt + 1}/${retries + 1})`);
         if (attempt < retries) {
