@@ -712,9 +712,9 @@ export function toHtmlReport(
     .drift-debug-body { margin-top: 4px; display: flex; flex-direction: column; gap: 4px; background: #f9fafb; border-radius: 4px; padding: 7px 10px; font-size: 0.72rem; color: #6b7280; }
 
     /* ── Links ── */
-    .ext-link { color: #1d4ed8; text-decoration: none; display: inline-flex; align-items: center; gap: 3px; font-weight: 500; }
+    .ext-link { color: #1d4ed8; text-decoration: none; font-weight: 500; }
     .ext-link:hover { text-decoration: underline; }
-    .ext-icon { width: 9px; height: 9px; flex-shrink: 0; opacity: 0.6; }
+    .ext-icon { width: 9px; height: 9px; display: inline-block; vertical-align: middle; position: relative; top: -1px; margin-left: 3px; opacity: 0.6; }
 
     code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 0.85em; }
   </style>

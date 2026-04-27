@@ -6,10 +6,10 @@ CI/CD validation and reporting for [Sigma Computing](https://sigmacomputing.com)
 
 | Check | What it flags |
 |---|---|
-| **Schema drift** | Warehouse columns referenced in a data model that no longer exist |
-| **Content / blast radius** | How many workbooks would break if a model element were removed |
+| **Schema drift** | Columns dropped from the warehouse that a data model element still references — these will error at query time |
+| **Content / blast radius** | How many workbooks (direct and transitive) would break if a model element were removed |
 | **Formula integrity** | Columns with broken or unresolvable formula references |
-| **Workbook direct sources** | Workbook elements sourced directly from warehouse tables or Custom SQL (bypassing the data model layer), including column drift against those tables |
+| **Workbook direct sources** | Workbook elements sourced directly from warehouse tables or Custom SQL (bypassing the data model layer); flags columns the element references that have since been dropped from the warehouse |
 
 ## Setup
 
@@ -124,11 +124,14 @@ jobs:
       {
         "modelId": "...",
         "modelName": "...",
-        "directWorkbooks": 3,
-        "transitiveWorkbooks": 12,
-        "affectedWorkbooks": [...]
+        "modelUrl": "https://...",
+        "path": "Dev",
+        "ownerId": "abc123",
+        "downstreamWorkbooks": [{ "workbookId": "...", "name": "...", "folder": "...", "url": "https://..." }],
+        "transitiveWorkbooks": [...]
       }
-    ]
+    ],
+    "modelDependencies": { "modelId": ["upstreamModelId"] }
   },
   "schemaDrift": {
     "models": [
@@ -139,7 +142,7 @@ jobs:
         "tables": [
           {
             "tableName": "ORDERS",
-            "missingColumns": ["LEGACY_COL"]
+            "droppedColumns": ["LEGACY_COL"]
           }
         ]
       }
@@ -154,13 +157,17 @@ jobs:
         "workbookId": "...",
         "workbookName": "My Workbook",
         "workbookUrl": "https://...",
+        "path": "My Documents",
+        "ownerId": "abc123",
         "hasDrift": false,
         "hasCustomSql": true,
         "elements": [
           {
             "elementId": "...",
+            "elementName": "ORDERS",
             "sourceKind": "warehouse-table",
             "tableName": "ORDERS",
+            "tableInodeId": "inode-...",
             "connectionId": "...",
             "referencedColumns": ["ORDER_ID", "AMOUNT"],
             "actualColumns": ["ORDER_ID", "AMOUNT", "STATUS"],
@@ -168,6 +175,7 @@ jobs:
           },
           {
             "elementId": "...",
+            "elementName": null,
             "sourceKind": "custom-sql",
             "connectionId": "...",
             "sqlDefinition": "select * from MY_SCHEMA.ORDERS",
@@ -178,6 +186,7 @@ jobs:
         ]
       }
     ],
+    "totalWorkbooksScanned": 47,
     "totalDirectElements": 5,
     "totalCustomSqlElements": 2,
     "totalMissingColumns": 0
@@ -188,6 +197,11 @@ jobs:
 ## Web UI (Render)
 
 The repo includes a `render.yaml` for deploying a persistent web UI via [Render](https://render.com). The web server (`src/server.ts`) exposes a form-based interface for triggering on-demand reports without the CLI.
+
+The HTML report includes:
+- **Overview table** — all models with folder path, owner name, downstream workbook counts, and check statuses at a glance
+- **Direct-source workbooks section** — workbooks bypassing the data model layer, with folder and owner info
+- **Detail cards** — per-model breakdown of downstream workbooks, schema drift tables, and formula issues
 
 Set `SIGMA_CLIENT_ID` and `SIGMA_CLIENT_SECRET` as environment variables in the Render dashboard.
 
