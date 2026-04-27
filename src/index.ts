@@ -120,6 +120,7 @@ program
   .option("--content-only", "Run only content validation")
   .option("--drift-only", "Run only schema drift validation")
   .option("--skip-sync", "Skip pre-syncing table schemas before drift check")
+  .option("--skip-model-deps", "Skip model→model dependency graph (recommended for orgs with 500+ models)")
   .action(
     async (opts: {
       model: string[];
@@ -129,6 +130,7 @@ program
       contentOnly: boolean;
       driftOnly: boolean;
       skipSync: boolean;
+      skipModelDeps: boolean;
     }) => {
       const format = opts.format as OutputFormat;
 
@@ -157,7 +159,7 @@ program
 
       // Run sequentially to avoid concurrent API storms against the same rate-limit quota.
       const contentReport = runContent
-        ? await runContentValidation(client, models, modelUrlMap)
+        ? await runContentValidation(client, models, modelUrlMap, { skipModelDeps: opts.skipModelDeps })
         : { models: [], modelDependencies: {}, generatedAt: new Date().toISOString() };
       const driftReport = runDrift
         ? await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync })
@@ -199,8 +201,9 @@ program
   )
   .option("--open", "Open HTML report in browser (default for report command)")
   .option("--skip-sync", "Skip pre-syncing table schemas before drift check")
+  .option("--skip-model-deps", "Skip model→model dependency graph (recommended for orgs with 500+ models)")
   .action(
-    async (opts: { model: string[]; all: boolean; format: string; open: boolean; skipSync: boolean }) => {
+    async (opts: { model: string[]; all: boolean; format: string; open: boolean; skipSync: boolean; skipModelDeps: boolean }) => {
       const format = opts.format as OutputFormat;
 
       if (opts.model.length === 0 && !opts.all) {
@@ -224,7 +227,7 @@ program
       console.error(`Generating report for ${models.length} model(s)...`);
 
       // Run sequentially to avoid concurrent API storms against the same rate-limit quota.
-      const contentReport = await runContentValidation(client, models, modelUrlMap);
+      const contentReport = await runContentValidation(client, models, modelUrlMap, { skipModelDeps: opts.skipModelDeps });
       const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);

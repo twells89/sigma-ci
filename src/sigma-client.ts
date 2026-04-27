@@ -121,6 +121,14 @@ export interface WorkbookElementColumn {
   type?: unknown;
 }
 
+/** Entry from GET /v2/workbooks/{id}/sources */
+export interface WorkbookSource {
+  type: "table" | "data-model" | "dataset" | string;
+  inodeId?: string;      // for type: "table" and "dataset"
+  dataModelId?: string;  // for type: "data-model"
+  elementIds?: string[]; // for type: "data-model"
+}
+
 /** Entry from GET /v2/dataModels/{id}/columns */
 export interface DataModelColumn {
   elementId: string;
@@ -145,10 +153,11 @@ export class SigmaClient {
   // and spec data; caching here eliminates the duplicate API calls entirely.
   private _lineageCache = new Map<string, LineageResponse>();
   private _specCache = new Map<string, DataModelSpec>();
-  // Global concurrency semaphore — all validators share one SigmaClient, so
-  // capping in-flight requests here prevents any combination of concurrent
-  // validator calls from bursting past the API rate limit.
-  private _slots = 5;
+  // Global concurrency semaphore — all validators share one SigmaClient.
+  // /sources is much less rate-limited than /lineage; 20 slots lets the fast
+  // endpoints run at full speed while per-phase runConcurrent() caps the
+  // slower DM-lineage calls at 3 concurrent.
+  private _slots = 20;
   private _waiting: Array<() => void> = [];
 
   private async _throttle<T>(fn: () => Promise<T>): Promise<T> {
@@ -215,13 +224,13 @@ export class SigmaClient {
         fetch(`${this.baseUrl}${path}`, { method: "GET", headers: this.getHeaders() })
       );
 
-      // Retry on rate-limit (429) and transient server errors (502/503/504)
-      if (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) {
+      // Retry on rate-limit (429/430) and transient server errors (502/503/504)
+      if (response.status === 429 || response.status === 430 || response.status === 502 || response.status === 503 || response.status === 504) {
         const retryAfterSec = parseInt(response.headers.get("Retry-After") ?? "0", 10);
         const delayMs = retryAfterSec > 0
           ? retryAfterSec * 1000
           : Math.min(1000 * Math.pow(2, attempt), 30_000); // 1s, 2s, 4s … up to 30s
-        const label = response.status === 429 ? "rate-limit" : "transient";
+        const label = response.status === 429 || response.status === 430 ? "rate-limit" : "transient";
         console.error(`  [${label}] ${response.status} on ${path} — waiting ${delayMs}ms (attempt ${attempt + 1}/${retries + 1})`);
         if (attempt < retries) {
           await new Promise((r) => setTimeout(r, delayMs));
@@ -294,6 +303,10 @@ export class SigmaClient {
     return this.getAllPages<LineageEntry>(`/v2/workbooks/${id}/lineage`).then(
       (entries) => ({ entries })
     );
+  }
+
+  async getWorkbookSources(workbookId: string): Promise<WorkbookSource[]> {
+    return this.get<WorkbookSource[]>(`/v2/workbooks/${workbookId}/sources`).catch(() => []);
   }
 
   async getWorkbookElements(workbookId: string): Promise<WorkbookElement[]> {

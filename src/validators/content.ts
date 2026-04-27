@@ -1,4 +1,4 @@
-import { SigmaClient, DataModel, Workbook } from "../sigma-client.js";
+import { SigmaClient, DataModel, Workbook, WorkbookSource } from "../sigma-client.js";
 
 async function runConcurrent(tasks: Array<() => Promise<void>>, concurrency: number): Promise<void> {
   const queue = [...tasks];
@@ -54,7 +54,8 @@ function getFolder(workbook: Workbook): string {
 export async function runContentValidation(
   client: SigmaClient,
   models: DataModel[],
-  modelUrlMap?: Map<string, string>   // dataModelId → sigma URL (for links)
+  modelUrlMap?: Map<string, string>,   // dataModelId → sigma URL (for links)
+  opts?: { skipModelDeps?: boolean }
 ): Promise<ContentReport> {
   // Build lookup maps
   const urlIdToModelId = new Map<string, string>();
@@ -73,62 +74,66 @@ export async function runContentValidation(
   }
 
   // ── Step 1: model→model dependency graph from model lineages ──────────────
-  console.error("  [content] Building model dependency graph…");
-  // modelDeps: dependentModelId → Set<upstreamModelId>
+  // Skipped by default on large orgs — each DM lineage call is rate-limited
+  // (~5 req/s) so 1,000+ models takes several minutes. Enable with skipModelDeps:false.
   const modelDeps = new Map<string, Set<string>>();
+  const reverseDeps = new Map<string, Set<string>>();
 
-  await runConcurrent(models.map((m) => async () => {
-    try {
-      const lineage = await client.getDataModelLineage(m.dataModelId);
-      const upstream = new Set<string>();
-      for (const entry of lineage.entries) {
-        for (const dsId of entry.dataSourceIds ?? []) {
-          const urlId = dsId.split("/")[0];
-          const upstreamId = urlIdToModelId.get(urlId);
-          if (upstreamId && upstreamId !== m.dataModelId) {
-            upstream.add(upstreamId);
+  if (!opts?.skipModelDeps) {
+    console.error("  [content] Building model dependency graph…");
+
+    await runConcurrent(models.map((m) => async () => {
+      try {
+        const lineage = await client.getDataModelLineage(m.dataModelId);
+        const upstream = new Set<string>();
+        for (const entry of lineage.entries) {
+          for (const dsId of entry.dataSourceIds ?? []) {
+            const urlId = dsId.split("/")[0];
+            const upstreamId = urlIdToModelId.get(urlId);
+            if (upstreamId && upstreamId !== m.dataModelId) {
+              upstream.add(upstreamId);
+            }
           }
         }
-      }
-      if (upstream.size > 0) modelDeps.set(m.dataModelId, upstream);
-    } catch { /* skip */ }
-  }), 5);
+        if (upstream.size > 0) modelDeps.set(m.dataModelId, upstream);
+      } catch { /* skip */ }
+    }), 3);
 
-  // Build reverse graph: upstreamModelId → Set<dependentModelId>
-  const reverseDeps = new Map<string, Set<string>>();
-  for (const [dep, upstreams] of modelDeps) {
-    for (const up of upstreams) {
-      if (!reverseDeps.has(up)) reverseDeps.set(up, new Set());
-      reverseDeps.get(up)!.add(dep);
+    for (const [dep, upstreams] of modelDeps) {
+      for (const up of upstreams) {
+        if (!reverseDeps.has(up)) reverseDeps.set(up, new Set());
+        reverseDeps.get(up)!.add(dep);
+      }
     }
   }
 
-  // ── Step 2: workbook→model connections via workbook lineages ─────────────
+  // ── Step 2: workbook→model connections via /sources (faster than /lineage) ─
   console.error("  [content] Fetching workbook list…");
   const workbooks = await client.listWorkbooks();
-  console.error(`  [content] Scanning ${workbooks.length} workbooks…`);
+  console.error(`  [content] Scanning ${workbooks.length} workbooks via /sources…`);
 
   // workbookId → Set<modelId> (direct connections)
   const wbToModels = new Map<string, Set<string>>();
   const wbById = new Map<string, Workbook>(workbooks.map((w) => [w.workbookId, w]));
 
+  // Build a fast lookup set for direct modelId matching (type: "data-model" sources)
+  const modelIdSet = new Set(models.map((m) => m.dataModelId));
+
   let scanned = 0;
   await runConcurrent(workbooks.map((wb) => async () => {
     try {
-      const lineage = await client.getWorkbookLineage(wb.workbookId);
+      const sources: WorkbookSource[] = await client.getWorkbookSources(wb.workbookId);
       const matched = new Set<string>();
-      for (const entry of lineage.entries) {
-        for (const dsId of entry.dataSourceIds ?? []) {
-          const urlId = dsId.split("/")[0];
-          const modelId = urlIdToModelId.get(urlId);
-          if (modelId) matched.add(modelId);
+      for (const src of sources) {
+        if (src.type === "data-model" && src.dataModelId && modelIdSet.has(src.dataModelId)) {
+          matched.add(src.dataModelId);
         }
       }
       if (matched.size > 0) wbToModels.set(wb.workbookId, matched);
     } catch { /* skip */ }
     scanned++;
     if (scanned % 500 === 0) console.error(`  [content] Scanned ${scanned}/${workbooks.length} workbooks…`);
-  }), 25);
+  }), 50);
 
   // ── Step 3: compute transitive downstream workbooks ───────────────────────
   // For a model M, transitively downstream workbooks = workbooks that use any

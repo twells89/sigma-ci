@@ -3,6 +3,7 @@ import type {
   Workbook,
   LineageEntry,
   WorkbookElementColumn,
+  WorkbookSource,
 } from "../sigma-client.js";
 
 async function runConcurrent(tasks: Array<() => Promise<void>>, concurrency: number): Promise<void> {
@@ -84,21 +85,41 @@ export async function runWorkbookDirectSourceCheck(
 ): Promise<DirectSourceReport> {
   const log = (msg: string) => { if (onProgress) onProgress(msg); else console.error(msg); };
 
-  // ── Phase 1: Fetch all workbook lineages in parallel ──────────────────────
+  // ── Phase 1: Pre-filter via /sources, then lineage only for candidates ────
+  // /sources is ~4.6× faster than /lineage and tells us the source type.
+  // DM-connected workbooks (type:"data-model" or "dataset") can be skipped —
+  // only direct-warehouse (type:"table") or potentially-custom-SQL (empty) need
+  // a full lineage scan.
   log("  [direct-source] Fetching workbooks…");
   const workbooks = await client.listWorkbooks();
-  log(`  [direct-source] Fetched ${workbooks.length} workbooks. Scanning lineages…`);
+  log(`  [direct-source] Fetched ${workbooks.length} workbooks. Pre-filtering via /sources…`);
+
+  const sourcesMap = new Map<string, WorkbookSource[]>();
+  let prefilterScanned = 0;
+  await runConcurrent(workbooks.map((wb) => async () => {
+    const sources = await client.getWorkbookSources(wb.workbookId);
+    sourcesMap.set(wb.workbookId, sources);
+    prefilterScanned++;
+    if (prefilterScanned % 1000 === 0) log(`  [direct-source] Pre-filtered ${prefilterScanned}/${workbooks.length} workbooks…`);
+  }), 50);
+
+  // Candidates: direct warehouse source OR empty sources (potential custom SQL)
+  const candidateWorkbooks = workbooks.filter((wb) => {
+    const sources = sourcesMap.get(wb.workbookId) ?? [];
+    return sources.length === 0 || sources.some((s) => s.type === "table");
+  });
+  log(`  [direct-source] ${candidateWorkbooks.length}/${workbooks.length} candidate workbooks need lineage scan.`);
 
   type LineageResult = { wb: Workbook; entries: LineageEntry[] };
   const lineages: LineageResult[] = [];
   let dsScanned = 0;
-  await runConcurrent(workbooks.map((wb) => async () => {
+  await runConcurrent(candidateWorkbooks.map((wb) => async () => {
     const result = await client.getWorkbookLineage(wb.workbookId)
       .then((l) => ({ wb, entries: l.entries }))
       .catch(() => ({ wb, entries: [] as LineageEntry[] }));
     lineages.push(result);
     dsScanned++;
-    if (dsScanned % 500 === 0) log(`  [direct-source] Scanned ${dsScanned}/${workbooks.length} workbooks…`);
+    if (dsScanned % 100 === 0) log(`  [direct-source] Scanned ${dsScanned}/${candidateWorkbooks.length} candidate lineages…`);
   }), 25);
 
   // ── Phase 2: Identify candidates ─────────────────────────────────────────
