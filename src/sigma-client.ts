@@ -284,7 +284,7 @@ export class SigmaClient {
 
   async getDataModelSpec(id: string): Promise<DataModelSpec> {
     if (this._specCache.has(id)) return this._specCache.get(id)!;
-    const result = await this.get<DataModelSpec>(`/v3alpha/datamodels/${id}/spec`);
+    const result = await this.get<DataModelSpec>(`/v2/dataModels/${id}/spec`);
     this._specCache.set(id, result);
     return result;
   }
@@ -351,19 +351,12 @@ export class SigmaClient {
   }
 
   async updateDataModelSpec(id: string, spec: DataModelSpec): Promise<void> {
-    // Try v3alpha first (matches the read endpoint so the spec round-trips cleanly).
-    // Fall back to v2 if v3alpha returns 404 or 405 (method not allowed).
-    const v3alphaUrl = `${this.baseUrl}/v3alpha/datamodels/${id}/spec`;
-    const v2Url      = `${this.baseUrl}/v2/dataModels/${id}/spec`;
-
-    const attemptPut = async (url: string) =>
-      fetch(url, { method: "PUT", headers: this.getHeaders(), body: JSON.stringify(spec) });
-
-    let response = await attemptPut(v3alphaUrl);
-    if (response.status === 404 || response.status === 405) {
-      response = await attemptPut(v2Url);
-    }
-
+    const url = `${this.baseUrl}/v2/dataModels/${id}/spec`;
+    const response = await fetch(url, {
+      method: "PUT",
+      headers: this.getHeaders(),
+      body: JSON.stringify(spec),
+    });
     if (!response.ok) {
       const text = await response.text();
       throw new Error(`updateDataModelSpec failed (${response.status}) for model ${id}: ${text}`);
