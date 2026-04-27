@@ -3,6 +3,8 @@ import { DriftReport, DriftTable } from "./validators/schema-drift.js";
 import { FormulaCheckReport, FormulaElementResult } from "./validators/formula-check.js";
 import { DirectSourceReport, DirectSourceWorkbook, DirectSourceElement } from "./validators/workbook-direct-source.js";
 
+export type MemberMap = Map<string, { name: string; email: string }>;
+
 export interface CombinedReport {
   generatedAt: string;
   content: ContentReport;
@@ -70,6 +72,8 @@ interface UnifiedModelRow {
   modelId: string;
   modelName: string;
   modelUrl?: string;
+  path?: string;
+  ownerId?: string;
   directWorkbooks: DownstreamWorkbook[];
   transitiveWorkbooks: DownstreamWorkbook[];
   upstreamModelIds: string[];
@@ -98,6 +102,8 @@ function mergeReports(
       modelId: cm.modelId,
       modelName: cm.modelName,
       modelUrl: cm.modelUrl,
+      path: cm.path,
+      ownerId: cm.ownerId,
       directWorkbooks: cm.downstreamWorkbooks,
       transitiveWorkbooks: cm.transitiveWorkbooks,
       upstreamModelIds: contentReport.modelDependencies[cm.modelId] ?? [],
@@ -110,6 +116,19 @@ function mergeReports(
   });
 
   return { rows, nameById };
+}
+
+// ── Owner / folder helpers ────────────────────────────────────────────────────
+
+function ownerDisplay(ownerId: string | undefined, memberMap: MemberMap | undefined): string {
+  if (!ownerId) return "—";
+  const m = memberMap?.get(ownerId);
+  if (!m) return "—";
+  return m.name || m.email || "—";
+}
+
+function folderDisplay(path: string | undefined): string {
+  return path ? escapeHtml(path) : "—";
 }
 
 // ── Summary bar ────────────────────────────────────────────────────────────────
@@ -165,7 +184,7 @@ function renderWorkbooksSummaryBar(directReport: DirectSourceReport | undefined)
 
 // ── Overview table ─────────────────────────────────────────────────────────────
 
-function renderOverviewTable(rows: UnifiedModelRow[]): string {
+function renderOverviewTable(rows: UnifiedModelRow[], memberMap: MemberMap | undefined): string {
   const tableRows = rows.map((r) => {
     const statusDot = r.isHealthy
       ? `<span class="status-dot dot-ok" title="Healthy"></span>`
@@ -191,6 +210,8 @@ function renderOverviewTable(rows: UnifiedModelRow[]): string {
     return `<tr data-model-id="${escapeHtml(r.modelId)}" class="overview-row" title="Jump to details">
       <td class="td-status">${statusDot}</td>
       <td>${modelCell}</td>
+      <td class="td-meta">${folderDisplay(r.path)}</td>
+      <td class="td-meta">${escapeHtml(ownerDisplay(r.ownerId, memberMap))}</td>
       <td class="td-center">${wbCell}</td>
       <td class="td-center">${driftCell}</td>
       <td class="td-center">${formulaCell}</td>
@@ -205,6 +226,8 @@ function renderOverviewTable(rows: UnifiedModelRow[]): string {
         <tr>
           <th style="width:28px"></th>
           <th>Model</th>
+          <th>Folder</th>
+          <th>Owner</th>
           <th class="th-center">Downstream Workbooks</th>
           <th class="th-center">Schema Drift</th>
           <th class="th-center">Formula Check</th>
@@ -220,7 +243,8 @@ function renderOverviewTable(rows: UnifiedModelRow[]): string {
 function renderModelDetailCard(
   row: UnifiedModelRow,
   nameById: Map<string, string>,
-  sessionId?: string
+  sessionId?: string,
+  memberMap?: MemberMap
 ): string {
   const cardId      = `model-detail-${row.modelId}`;
   const borderClass = row.isHealthy ? "" : "model-card-error";
@@ -232,6 +256,8 @@ function renderModelDetailCard(
   const healthBadge = row.isHealthy
     ? `<span class="badge badge-ok">Healthy</span>`
     : `<span class="badge badge-error">Issues found</span>`;
+
+  const metaHtml = `<div class="model-meta"><span class="meta-item"><span class="meta-label">Folder</span>${folderDisplay(row.path)}</span><span class="meta-item"><span class="meta-label">Owner</span>${escapeHtml(ownerDisplay(row.ownerId, memberMap))}</span></div>`;
 
   const upstreamHtml = row.upstreamModelIds.length > 0
     ? `<div class="dep-chain">Sources: ${row.upstreamModelIds.map((id) => {
@@ -343,6 +369,7 @@ function renderModelDetailCard(
       ${healthBadge}
       ${driftFixBtn}
     </div>
+    ${metaHtml}
 
     <div class="detail-panels">
 
@@ -386,9 +413,10 @@ function renderModelDetailCard(
 function renderDetailSection(
   rows: UnifiedModelRow[],
   nameById: Map<string, string>,
-  sessionId?: string
+  sessionId?: string,
+  memberMap?: MemberMap
 ): string {
-  const cards = rows.map((r) => renderModelDetailCard(r, nameById, sessionId)).join("\n");
+  const cards = rows.map((r) => renderModelDetailCard(r, nameById, sessionId, memberMap)).join("\n");
   return `<section><h2>Model Details</h2>${cards}</section>`;
 }
 
@@ -424,7 +452,7 @@ function renderDirectSourceElement(elem: DirectSourceElement): string {
   </tr>`;
 }
 
-function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
+function renderDirectSourceCard(wb: DirectSourceWorkbook, memberMap: MemberMap | undefined): string {
   const titleHtml = wb.workbookUrl
     ? externalLink(wb.workbookUrl, wb.workbookName, "model-title-link")
     : `<span class="model-title">${escapeHtml(wb.workbookName)}</span>`;
@@ -432,6 +460,7 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
   const govBadge = `<span class="badge badge-warn">Bypasses data model</span>`;
   const sqlBadge = wb.hasCustomSql ? `<span class="badge badge-warn">Custom SQL</span>` : ``;
   const driftBadge = wb.hasDrift ? `<span class="badge badge-error">Warehouse cols dropped</span>` : ``;
+  const metaHtml = `<div class="model-meta"><span class="meta-item"><span class="meta-label">Folder</span>${folderDisplay(wb.path)}</span><span class="meta-item"><span class="meta-label">Owner</span>${escapeHtml(ownerDisplay(wb.ownerId, memberMap))}</span></div>`;
 
   const warehouseElems = wb.elements.filter((e) => e.sourceKind === "warehouse-table");
   const customSqlElems = wb.elements.filter((e) => e.sourceKind === "custom-sql");
@@ -471,6 +500,7 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
       ${sqlBadge}
       ${driftBadge}
     </div>
+    ${metaHtml}
     <div class="detail-panels">
       ${warehousePanel}
       ${sqlPanel}
@@ -478,7 +508,7 @@ function renderDirectSourceCard(wb: DirectSourceWorkbook): string {
   </div>`;
 }
 
-function renderDirectSourceSection(report: DirectSourceReport | undefined): string {
+function renderDirectSourceSection(report: DirectSourceReport | undefined, memberMap: MemberMap | undefined): string {
   if (!report || report.workbooks.length === 0) {
     return `
     <section>
@@ -487,7 +517,7 @@ function renderDirectSourceSection(report: DirectSourceReport | undefined): stri
     </section>`;
   }
 
-  const cards = report.workbooks.map(renderDirectSourceCard).join("\n");
+  const cards = report.workbooks.map((wb) => renderDirectSourceCard(wb, memberMap)).join("\n");
   return `
   <section>
     <h2>Direct Warehouse Access <span class="section-badge section-badge-warn">${report.workbooks.length} workbook${report.workbooks.length !== 1 ? "s" : ""}</span></h2>
@@ -501,12 +531,13 @@ function renderDirectSourceSection(report: DirectSourceReport | undefined): stri
 export function toHtmlReport(
   contentReport: ContentReport,
   driftReport: DriftReport,
-  options?: { sessionId?: string; formulaReport?: FormulaCheckReport; directSourceReport?: DirectSourceReport }
+  options?: { sessionId?: string; formulaReport?: FormulaCheckReport; directSourceReport?: DirectSourceReport; memberMap?: MemberMap }
 ): string {
   const generatedAt        = new Date().toISOString();
   const sessionId          = options?.sessionId;
   const formulaReport      = options?.formulaReport;
   const directSourceReport = options?.directSourceReport;
+  const memberMap          = options?.memberMap;
 
   const { rows, nameById } = mergeReports(contentReport, driftReport, formulaReport);
 
@@ -610,6 +641,10 @@ export function toHtmlReport(
     .model-title  { font-weight: 700; font-size: 0.95rem; color: #111827; }
     .model-id     { color: #9ca3af; font-size: 0.72rem; font-family: "SFMono-Regular", Consolas, monospace; }
     .model-title-link { font-weight: 700; font-size: 0.95rem; }
+    .model-meta   { display: flex; gap: 20px; padding: 6px 18px; background: #f9fafb; border-bottom: 1px solid #f3f4f6; }
+    .meta-item    { font-size: 0.75rem; color: #6b7280; }
+    .meta-label   { font-weight: 600; color: #9ca3af; text-transform: uppercase; font-size: 0.65rem; letter-spacing: 0.04em; margin-right: 5px; }
+    .td-meta      { font-size: 0.8rem; color: #6b7280; white-space: nowrap; }
     .model-name-plain { font-weight: 700; font-size: 0.95rem; color: #111827; }
 
     /* ── Badges & tags ── */
@@ -702,9 +737,9 @@ export function toHtmlReport(
   <div class="page-body">
     ${renderSummaryBar(rows)}
     ${renderWorkbooksSummaryBar(directSourceReport)}
-    ${renderOverviewTable(rows)}
-    ${renderDirectSourceSection(directSourceReport)}
-    ${renderDetailSection(rows, nameById, sessionId)}
+    ${renderOverviewTable(rows, memberMap)}
+    ${renderDirectSourceSection(directSourceReport, memberMap)}
+    ${renderDetailSection(rows, nameById, sessionId, memberMap)}
   </div>
   <script>
     document.addEventListener('click', function(e) {

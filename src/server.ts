@@ -6,7 +6,7 @@ import { runSchemaDriftValidation } from "./validators/schema-drift.js";
 import { applyDriftFix } from "./validators/drift-fix.js";
 import { runFormulaCheck } from "./validators/formula-check.js";
 import { runWorkbookDirectSourceCheck } from "./validators/workbook-direct-source.js";
-import { toHtmlReport } from "./report.js";
+import { toHtmlReport, MemberMap } from "./report.js";
 
 const app = express();
 app.use(express.json());
@@ -706,11 +706,18 @@ app.post("/api/validate", (req, res) => {
       addStep("Scanning workbooks for direct warehouse and custom SQL sources…");
       const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, addStep);
 
+      addStep("Resolving member names…");
+      const members = await client.listMembers();
+      const memberMap: MemberMap = new Map(members.map((m) => [
+        m.memberId,
+        { name: [m.firstName, m.lastName].filter(Boolean).join(" "), email: m.email ?? "" },
+      ]));
+
       const sessionId = randomUUID();
       sessions.set(sessionId, { clientId, clientSecret, baseUrl, createdAt: Date.now() });
 
       addStep("Generating report…");
-      const html = toHtmlReport(contentReport, driftReport, { sessionId, formulaReport, directSourceReport });
+      const html = toHtmlReport(contentReport, driftReport, { sessionId, formulaReport, directSourceReport, memberMap });
 
       const reportId = randomUUID();
       reports.set(reportId, { html, createdAt: Date.now() });

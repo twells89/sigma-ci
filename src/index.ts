@@ -14,6 +14,7 @@ import {
   toJsonReport,
   toHtmlReport,
   toTextReport,
+  MemberMap,
 } from "./report.js";
 
 type OutputFormat = "text" | "json" | "html";
@@ -164,11 +165,16 @@ program
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
       const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, undefined, { skipSync: opts.skipSync });
+      const members = await client.listMembers();
+      const memberMap: MemberMap = new Map(members.map((m) => [
+        m.memberId,
+        { name: [m.firstName, m.lastName].filter(Boolean).join(" "), email: m.email ?? "" },
+      ]));
 
       outputResult(
         format,
         opts.open,
-        toHtmlReport(contentReport, driftReport, { formulaReport, directSourceReport }),
+        toHtmlReport(contentReport, driftReport, { formulaReport, directSourceReport, memberMap }),
         toJsonReport(contentReport, driftReport, formulaReport, directSourceReport),
         toTextReport(contentReport, driftReport)
       );
@@ -223,6 +229,11 @@ program
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
       const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, undefined, { skipSync: opts.skipSync });
+      const members = await client.listMembers();
+      const memberMap: MemberMap = new Map(members.map((m) => [
+        m.memberId,
+        { name: [m.firstName, m.lastName].filter(Boolean).join(" "), email: m.email ?? "" },
+      ]));
 
       // report command defaults to open=true when format is html
       const shouldOpen = opts.open || format === "html";
@@ -230,7 +241,7 @@ program
       outputResult(
         format,
         shouldOpen,
-        toHtmlReport(contentReport, driftReport, { formulaReport, directSourceReport }),
+        toHtmlReport(contentReport, driftReport, { formulaReport, directSourceReport, memberMap }),
         toJsonReport(contentReport, driftReport, formulaReport, directSourceReport),
         toTextReport(contentReport, driftReport)
       );

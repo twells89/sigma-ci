@@ -27,6 +27,8 @@ export interface DirectSourceWorkbook {
   workbookId: string;
   workbookName: string;
   workbookUrl?: string;
+  path?: string;
+  ownerId?: string;
   elements: DirectSourceElement[];
   hasDrift: boolean;
   hasCustomSql: boolean;
@@ -272,6 +274,8 @@ export async function runWorkbookDirectSourceCheck(
         workbookId: wb.workbookId,
         workbookName: wb.name,
         workbookUrl: workbookUrlMap?.get(wb.workbookId) ?? wb.url,
+        path: wb.path,
+        ownerId: wb.ownerId,
         elements: [],
         hasDrift: false,
         hasCustomSql: false,

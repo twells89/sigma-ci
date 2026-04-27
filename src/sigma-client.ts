@@ -93,6 +93,13 @@ export interface Workbook {
   updatedAt?: string;
 }
 
+export interface Member {
+  memberId: string;
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+}
+
 export interface TableColumn {
   name: string;
   type?: { type?: string } | string;
@@ -258,6 +265,10 @@ export class SigmaClient {
 
   async listWorkbooks(): Promise<Workbook[]> {
     return this.getAllPages<Workbook>("/v2/workbooks?skipPermissionCheck=true");
+  }
+
+  async listMembers(): Promise<Member[]> {
+    return this.getAllPages<Member>("/v2.1/members");
   }
 
   async getDataModelSpec(id: string): Promise<DataModelSpec> {

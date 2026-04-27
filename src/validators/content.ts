@@ -11,6 +11,8 @@ export interface ContentModelResult {
   modelId: string;
   modelName: string;
   modelUrl?: string;
+  path?: string;
+  ownerId?: string;
   downstreamWorkbooks: DownstreamWorkbook[];
   // Transitive workbooks: workbooks that reach this model through a downstream model
   transitiveWorkbooks: DownstreamWorkbook[];
@@ -182,6 +184,8 @@ export async function runContentValidation(
       modelId: m.dataModelId,
       modelName: modelIdToName.get(m.dataModelId) ?? m.dataModelId,
       modelUrl: modelIdToUrl.get(m.dataModelId),
+      path: m.path,
+      ownerId: m.ownerId,
       downstreamWorkbooks: directWbs,
       transitiveWorkbooks: transitiveWbs,
     });
