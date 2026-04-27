@@ -1,5 +1,16 @@
 import { SigmaClient, DataModel, Workbook } from "../sigma-client.js";
 
+async function runConcurrent(tasks: Array<() => Promise<void>>, concurrency: number): Promise<void> {
+  const queue = [...tasks];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const task = queue.shift()!;
+      await task();
+    }
+  });
+  await Promise.all(workers);
+}
+
 export interface DownstreamWorkbook {
   workbookId: string;
   name: string;
@@ -66,27 +77,22 @@ export async function runContentValidation(
   // modelDeps: dependentModelId → Set<upstreamModelId>
   const modelDeps = new Map<string, Set<string>>();
 
-  const MDEP_BATCH = 3;
-  for (let i = 0; i < models.length; i += MDEP_BATCH) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 500)); // brief pause between batches
-    const batch = models.slice(i, i + MDEP_BATCH);
-    await Promise.all(batch.map(async (m) => {
-      try {
-        const lineage = await client.getDataModelLineage(m.dataModelId);
-        const upstream = new Set<string>();
-        for (const entry of lineage.entries) {
-          for (const dsId of entry.dataSourceIds ?? []) {
-            const urlId = dsId.split("/")[0];
-            const upstreamId = urlIdToModelId.get(urlId);
-            if (upstreamId && upstreamId !== m.dataModelId) {
-              upstream.add(upstreamId);
-            }
+  await runConcurrent(models.map((m) => async () => {
+    try {
+      const lineage = await client.getDataModelLineage(m.dataModelId);
+      const upstream = new Set<string>();
+      for (const entry of lineage.entries) {
+        for (const dsId of entry.dataSourceIds ?? []) {
+          const urlId = dsId.split("/")[0];
+          const upstreamId = urlIdToModelId.get(urlId);
+          if (upstreamId && upstreamId !== m.dataModelId) {
+            upstream.add(upstreamId);
           }
         }
-        if (upstream.size > 0) modelDeps.set(m.dataModelId, upstream);
-      } catch { /* skip */ }
-    }));
-  }
+      }
+      if (upstream.size > 0) modelDeps.set(m.dataModelId, upstream);
+    } catch { /* skip */ }
+  }), 20);
 
   // Build reverse graph: upstreamModelId → Set<dependentModelId>
   const reverseDeps = new Map<string, Set<string>>();
@@ -106,25 +112,23 @@ export async function runContentValidation(
   const wbToModels = new Map<string, Set<string>>();
   const wbById = new Map<string, Workbook>(workbooks.map((w) => [w.workbookId, w]));
 
-  const WB_BATCH = 5;
-  for (let i = 0; i < workbooks.length; i += WB_BATCH) {
-    if (i > 0) await new Promise((r) => setTimeout(r, 500)); // brief pause between batches
-    const batch = workbooks.slice(i, i + WB_BATCH);
-    await Promise.all(batch.map(async (wb) => {
-      try {
-        const lineage = await client.getWorkbookLineage(wb.workbookId);
-        const matched = new Set<string>();
-        for (const entry of lineage.entries) {
-          for (const dsId of entry.dataSourceIds ?? []) {
-            const urlId = dsId.split("/")[0];
-            const modelId = urlIdToModelId.get(urlId);
-            if (modelId) matched.add(modelId);
-          }
+  let scanned = 0;
+  await runConcurrent(workbooks.map((wb) => async () => {
+    try {
+      const lineage = await client.getWorkbookLineage(wb.workbookId);
+      const matched = new Set<string>();
+      for (const entry of lineage.entries) {
+        for (const dsId of entry.dataSourceIds ?? []) {
+          const urlId = dsId.split("/")[0];
+          const modelId = urlIdToModelId.get(urlId);
+          if (modelId) matched.add(modelId);
         }
-        if (matched.size > 0) wbToModels.set(wb.workbookId, matched);
-      } catch { /* skip */ }
-    }));
-  }
+      }
+      if (matched.size > 0) wbToModels.set(wb.workbookId, matched);
+    } catch { /* skip */ }
+    scanned++;
+    if (scanned % 500 === 0) console.error(`  [content] Scanned ${scanned}/${workbooks.length} workbooks…`);
+  }), 50);
 
   // ── Step 3: compute transitive downstream workbooks ───────────────────────
   // For a model M, transitively downstream workbooks = workbooks that use any

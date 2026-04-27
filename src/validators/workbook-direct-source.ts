@@ -5,6 +5,17 @@ import type {
   WorkbookElementColumn,
 } from "../sigma-client.js";
 
+async function runConcurrent(tasks: Array<() => Promise<void>>, concurrency: number): Promise<void> {
+  const queue = [...tasks];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const task = queue.shift()!;
+      await task();
+    }
+  });
+  await Promise.all(workers);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface DirectSourceElement {
@@ -78,13 +89,17 @@ export async function runWorkbookDirectSourceCheck(
   const workbooks = await client.listWorkbooks();
   log(`  [direct-source] Fetched ${workbooks.length} workbooks. Scanning lineages…`);
 
-  const lineages = await Promise.all(
-    workbooks.map((wb) =>
-      client.getWorkbookLineage(wb.workbookId)
-        .then((l) => ({ wb, entries: l.entries }))
-        .catch(() => ({ wb, entries: [] as LineageEntry[] }))
-    )
-  );
+  type LineageResult = { wb: Workbook; entries: LineageEntry[] };
+  const lineages: LineageResult[] = [];
+  let dsScanned = 0;
+  await runConcurrent(workbooks.map((wb) => async () => {
+    const result = await client.getWorkbookLineage(wb.workbookId)
+      .then((l) => ({ wb, entries: l.entries }))
+      .catch(() => ({ wb, entries: [] as LineageEntry[] }));
+    lineages.push(result);
+    dsScanned++;
+    if (dsScanned % 500 === 0) log(`  [direct-source] Scanned ${dsScanned}/${workbooks.length} workbooks…`);
+  }), 50);
 
   // ── Phase 2: Identify candidates ─────────────────────────────────────────
   // Warehouse candidates: element whose sourceId is a UUID matching a type:"table"
