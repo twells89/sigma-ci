@@ -94,20 +94,20 @@ export async function runWorkbookDirectSourceCheck(
   const workbooks = await client.listWorkbooks();
   log(`  [direct-source] Fetched ${workbooks.length} workbooks. Pre-filtering via /sources…`);
 
-  const sourcesMap = new Map<string, WorkbookSource[]>();
+  // Only track candidate IDs — don't buffer all 12k source arrays in memory
+  const candidateSet = new Set<string>();
   let prefilterScanned = 0;
   await runConcurrent(workbooks.map((wb) => async () => {
     const sources = await client.getWorkbookSources(wb.workbookId);
-    sourcesMap.set(wb.workbookId, sources);
+    if (sources.length === 0 || sources.some((s) => s.type === "table")) {
+      candidateSet.add(wb.workbookId);
+    }
     prefilterScanned++;
     if (prefilterScanned % 1000 === 0) log(`  [direct-source] Pre-filtered ${prefilterScanned}/${workbooks.length} workbooks…`);
   }), 50);
 
   // Candidates: direct warehouse source OR empty sources (potential custom SQL)
-  const candidateWorkbooks = workbooks.filter((wb) => {
-    const sources = sourcesMap.get(wb.workbookId) ?? [];
-    return sources.length === 0 || sources.some((s) => s.type === "table");
-  });
+  const candidateWorkbooks = workbooks.filter((wb) => candidateSet.has(wb.workbookId));
   log(`  [direct-source] ${candidateWorkbooks.length}/${workbooks.length} candidate workbooks need lineage scan.`);
 
   type LineageResult = { wb: Workbook; entries: LineageEntry[] };

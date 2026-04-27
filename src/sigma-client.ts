@@ -154,10 +154,9 @@ export class SigmaClient {
   private _lineageCache = new Map<string, LineageResponse>();
   private _specCache = new Map<string, DataModelSpec>();
   // Global concurrency semaphore — all validators share one SigmaClient.
-  // /sources is much less rate-limited than /lineage; 20 slots lets the fast
-  // endpoints run at full speed while per-phase runConcurrent() caps the
-  // slower DM-lineage calls at 3 concurrent.
-  private _slots = 20;
+  // /sources handles 10+ concurrent fine; DM lineage is capped at 3 by
+  // runConcurrent() regardless of this value.
+  private _slots = 10;
   private _waiting: Array<() => void> = [];
 
   private async _throttle<T>(fn: () => Promise<T>): Promise<T> {

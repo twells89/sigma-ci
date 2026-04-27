@@ -3,7 +3,7 @@ services:
     name: sigma-sentinel
     runtime: node
     buildCommand: npm install && npm run build
-    startCommand: npm start
+    startCommand: node --max-old-space-size=400 dist/server.js
     plan: free
     envVars:
       - key: PORT

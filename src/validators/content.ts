@@ -112,9 +112,9 @@ export async function runContentValidation(
   const workbooks = await client.listWorkbooks();
   console.error(`  [content] Scanning ${workbooks.length} workbooks via /sources…`);
 
-  // workbookId → Set<modelId> (direct connections)
-  const wbToModels = new Map<string, Set<string>>();
-  const wbById = new Map<string, Workbook>(workbooks.map((w) => [w.workbookId, w]));
+  // workbookId → { wb, models } — only stores workbooks that actually match a model
+  // (avoids keeping all 12k workbook objects in a separate wbById map)
+  const wbToModels = new Map<string, { wb: Workbook; models: Set<string> }>();
 
   // Build a fast lookup set for direct modelId matching (type: "data-model" sources)
   const modelIdSet = new Set(models.map((m) => m.dataModelId));
@@ -129,7 +129,7 @@ export async function runContentValidation(
           matched.add(src.dataModelId);
         }
       }
-      if (matched.size > 0) wbToModels.set(wb.workbookId, matched);
+      if (matched.size > 0) wbToModels.set(wb.workbookId, { wb, models: matched });
     } catch { /* skip */ }
     scanned++;
     if (scanned % 500 === 0) console.error(`  [content] Scanned ${scanned}/${workbooks.length} workbooks…`);
@@ -167,11 +167,10 @@ export async function runContentValidation(
     const seenTransitive = new Set<string>();
 
     // Direct workbooks — use this model directly
-    for (const [wbId, modelSet] of wbToModels) {
+    for (const [wbId, { wb, models: modelSet }] of wbToModels) {
       if (modelSet.has(m.dataModelId)) {
         seenDirect.add(wbId);
-        const wb = wbById.get(wbId);
-        if (wb) directWbs.push(makeDownstreamWb(wb));
+        directWbs.push(makeDownstreamWb(wb));
       }
     }
 
@@ -180,11 +179,10 @@ export async function runContentValidation(
     downstreamModels.delete(m.dataModelId); // exclude self
 
     for (const downstreamModelId of downstreamModels) {
-      for (const [wbId, modelSet] of wbToModels) {
+      for (const [wbId, { wb, models: modelSet }] of wbToModels) {
         if (modelSet.has(downstreamModelId) && !seenDirect.has(wbId) && !seenTransitive.has(wbId)) {
           seenTransitive.add(wbId);
-          const wb = wbById.get(wbId);
-          if (wb) transitiveWbs.push(makeDownstreamWb(wb));
+          transitiveWbs.push(makeDownstreamWb(wb));
         }
       }
     }
