@@ -99,7 +99,7 @@ export async function runWorkbookDirectSourceCheck(
     lineages.push(result);
     dsScanned++;
     if (dsScanned % 500 === 0) log(`  [direct-source] Scanned ${dsScanned}/${workbooks.length} workbooks…`);
-  }), 50);
+  }), 25);
 
   // ── Phase 2: Identify candidates ─────────────────────────────────────────
   // Warehouse candidates: element whose sourceId is a UUID matching a type:"table"

@@ -92,7 +92,7 @@ export async function runContentValidation(
       }
       if (upstream.size > 0) modelDeps.set(m.dataModelId, upstream);
     } catch { /* skip */ }
-  }), 20);
+  }), 5);
 
   // Build reverse graph: upstreamModelId → Set<dependentModelId>
   const reverseDeps = new Map<string, Set<string>>();
@@ -128,7 +128,7 @@ export async function runContentValidation(
     } catch { /* skip */ }
     scanned++;
     if (scanned % 500 === 0) console.error(`  [content] Scanned ${scanned}/${workbooks.length} workbooks…`);
-  }), 50);
+  }), 25);
 
   // ── Step 3: compute transitive downstream workbooks ───────────────────────
   // For a model M, transitively downstream workbooks = workbooks that use any
