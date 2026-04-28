@@ -10,3 +10,5 @@ services:
         value: 10000
       - key: NODE_ENV
         value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=400

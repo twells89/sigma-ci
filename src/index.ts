@@ -166,6 +166,7 @@ program
         : { models: [], generatedAt: new Date().toISOString() };
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
+      client.clearCaches();
       const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, undefined, { skipSync: opts.skipSync });
       const members = await client.listMembers();
       const memberMap: MemberMap = new Map(members.map((m) => [
@@ -231,6 +232,7 @@ program
       const driftReport = await runSchemaDriftValidation(client, modelIds, modelUrlMap, undefined, { skipSync: opts.skipSync });
 
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap);
+      client.clearCaches();
       const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, undefined, { skipSync: opts.skipSync });
       const members = await client.listMembers();
       const memberMap: MemberMap = new Map(members.map((m) => [

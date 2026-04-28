@@ -153,6 +153,14 @@ export class SigmaClient {
   // and spec data; caching here eliminates the duplicate API calls entirely.
   private _lineageCache = new Map<string, LineageResponse>();
   private _specCache = new Map<string, DataModelSpec>();
+
+  /** Release spec and lineage caches. Call after formula check completes — the
+   *  direct-source validator doesn't need them and freeing here prevents the
+   *  combined spec+results payload from exhausting heap on large orgs. */
+  clearCaches(): void {
+    this._specCache.clear();
+    this._lineageCache.clear();
+  }
   // Global concurrency semaphore — all validators share one SigmaClient.
   // AWS cluster rate-limits /sources at ~5 concurrent; DM lineage is
   // further capped at 3 by per-phase runConcurrent() calls.

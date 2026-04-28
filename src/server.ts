@@ -433,7 +433,7 @@ const LANDING_HTML = `<!DOCTYPE html>
               </tr>
               <tr>
                 <td><span class="method get">GET</span></td>
-                <td class="endpoint">/v3alpha/datamodels/{id}/spec</td>
+                <td class="endpoint">/v2/dataModels/{id}/spec</td>
                 <td class="endpoint-desc">Read element structure, column formulas, and SQL sources</td>
               </tr>
               <tr>
@@ -444,12 +444,17 @@ const LANDING_HTML = `<!DOCTYPE html>
               <tr>
                 <td><span class="method get">GET</span></td>
                 <td class="endpoint">/v2/workbooks</td>
-                <td class="endpoint-desc">Enumerate workbooks for blast radius analysis</td>
+                <td class="endpoint-desc">Enumerate workbooks for blast radius and direct-source analysis</td>
+              </tr>
+              <tr>
+                <td><span class="method get">GET</span></td>
+                <td class="endpoint">/v2/workbooks/{id}/sources</td>
+                <td class="endpoint-desc">Identify each workbook's source type to map blast radius and pre-filter direct-source candidates</td>
               </tr>
               <tr>
                 <td><span class="method get">GET</span></td>
                 <td class="endpoint">/v2/workbooks/{id}/lineage</td>
-                <td class="endpoint-desc">Map each workbook to the data models it consumes</td>
+                <td class="endpoint-desc">Fetch element-level lineage for workbooks with direct warehouse or custom SQL sources</td>
               </tr>
               <tr>
                 <td><span class="method get">GET</span></td>
@@ -463,7 +468,7 @@ const LANDING_HTML = `<!DOCTYPE html>
               </tr>
               <tr>
                 <td><span class="method put">PUT</span></td>
-                <td class="endpoint">/v3alpha/datamodels/{id}/spec</td>
+                <td class="endpoint">/v2/dataModels/{id}/spec</td>
                 <td class="endpoint-desc">Write back fixed specs when applying one-click drift repairs</td>
               </tr>
             </tbody>
@@ -702,6 +707,7 @@ app.post("/api/validate", (req, res) => {
 
       addStep("Checking formula references…");
       const formulaReport = await runFormulaCheck(client, models, modelUrlMap, addStep);
+      client.clearCaches();
 
       addStep("Scanning workbooks for direct warehouse and custom SQL sources…");
       const directSourceReport = await runWorkbookDirectSourceCheck(client, modelUrlMap, addStep);
