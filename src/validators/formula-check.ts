@@ -1,6 +1,14 @@
 import { SigmaClient } from "../sigma-client.js";
 import type { DataModel, DataModelColumn, SpecColumn, SpecMetric } from "../sigma-client.js";
 
+async function runConcurrent(tasks: Array<() => Promise<void>>, concurrency: number): Promise<void> {
+  const queue = [...tasks];
+  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length > 0) { const task = queue.shift()!; await task(); }
+  });
+  await Promise.all(workers);
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface BrokenRef {
@@ -141,10 +149,10 @@ export async function runFormulaCheck(
   modelUrlMap?: Map<string, string>,
   onProgress?: (msg: string) => void
 ): Promise<FormulaCheckReport> {
-  const results: FormulaModelResult[] = [];
+  const results: FormulaModelResult[] = new Array(models.length);
+  let done = 0;
 
-  for (let i = 0; i < models.length; i++) {
-    const model = models[i];
+  await runConcurrent(models.map((model, i) => async () => {
     onProgress?.(`Checking formula references: model ${i + 1}/${models.length}…`);
 
     try {
@@ -281,26 +289,27 @@ export async function runFormulaCheck(
         (sum, e) => sum + e.brokenColumns.length,
         0
       );
-      results.push({
+      results[i] = {
         modelId: model.dataModelId,
         modelName: model.name,
         modelUrl: modelUrlMap?.get(model.dataModelId),
         elements: modelElements,
         totalBroken,
-      });
+      };
     } catch (e) {
       console.error(
         `  [formula] Error checking ${model.dataModelId}: ${(e as Error).message}`
       );
-      results.push({
+      results[i] = {
         modelId: model.dataModelId,
         modelName: model.name,
         modelUrl: modelUrlMap?.get(model.dataModelId),
         elements: [],
         totalBroken: 0,
-      });
+      };
     }
-  }
+    done++;
+  }), 5);
 
   return { models: results, generatedAt: new Date().toISOString() };
 }
